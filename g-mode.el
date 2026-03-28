@@ -97,8 +97,10 @@ Returns an alist of metadata including 'length in bytes, and 'name if present."
                    (nlen-buf (buffer-substring-no-properties (point) (+ (point) nlen-bytes)))
                    (nlen (g-mode--read-uint nlen-buf)))
               (forward-char nlen-bytes)
-              ;; Read name data. It includes a null byte, so we use (1- nlen)
-              (let ((name-str (buffer-substring-no-properties (point) (+ (point) (1- nlen)))))
+              ;; Read name data. It includes a null byte, so we use (1- nlen).
+              ;; Strip any trailing NUL padding for inline-renamed shorter names.
+              (let* ((raw-name (buffer-substring-no-properties (point) (+ (point) (1- nlen))))
+                     (name-str (replace-regexp-in-string "\0+\\'" "" raw-name)))
                 (forward-char nlen)
                 (setq obj (nconc obj `((name . ,name-str)))))))
           
@@ -226,6 +228,18 @@ Returns an alist of (KEY . VALUE) strings, or nil."
       (delete-char 1)
       (insert byte))))
 
+(defun g-mode--free-object-at (pos bin-buf)
+  "Mark object at POS as Free Storage natively in BIN-BUF."
+  (with-current-buffer bin-buf
+    (let* ((hflags (char-after (+ pos 1)))
+           (owid (ash (logand hflags #xC0) -6))
+           (new-hflags (logior (ash owid 6) #x02))
+           (new-aflags #x00)
+           (new-bflags #x20))
+      (g-mode--write-byte (+ pos 1) new-hflags)
+      (g-mode--write-byte (+ pos 2) new-aflags)
+      (g-mode--write-byte (+ pos 3) new-bflags))))
+
 (defun g-mode-delete-object ()
   "Mark the object at point as Free Storage (DLI=2) natively in the .g file."
   (interactive)
@@ -233,35 +247,134 @@ Returns an alist of (KEY . VALUE) strings, or nil."
         (bin-buf g-mode--binary-buffer))
     (unless obj
       (user-error "No object under point"))
-    (let* ((pos (cdr (assq 'pos obj)))
-           (hflags (cdr (assq 'hflags obj)))
-           (owid (ash (logand hflags #xC0) -6))
-           ;; New HFlags: keep OWid, set DLI=2
-           (new-hflags (logior (ash owid 6) #x02))
-           ;; New AFlags: AP=0, AWid=0
-           (new-aflags #x00)
-           ;; New BFlags: BP=1, BWid=0
-           (new-bflags #x20))
-      
+    (let ((hflags (cdr (assq 'hflags obj))))
       (when (= (logand hflags #x03) #x02)
         (user-error "Object is already marked as Free Space"))
       
-      ;; Write directly into the unibyte binary buffer
-      (with-current-buffer bin-buf
-        (g-mode--write-byte (+ pos 1) new-hflags)
-        (g-mode--write-byte (+ pos 2) new-aflags)
-        (g-mode--write-byte (+ pos 3) new-bflags))
+      (g-mode--free-object-at (cdr (assq 'pos obj)) bin-buf)
       
       (message "Marked object '%s' as Free Space." (or (cdr (assq 'name obj)) "unnamed"))
-      ;; Refresh the view
       (g-mode--refresh-entries)
       (tabulated-list-print t))))
 
-(defvar g-mode-ui-map
+(defun g-mode--interior-size (obj bin-buf)
+  "Calculate exact byte size of Interior Data for OBJ."
+  (with-current-buffer bin-buf
+    (save-excursion
+      (goto-char (cdr (assq 'interior-pos obj)))
+      (let* ((aflags (cdr (assq 'aflags obj)))
+             (ap (not (zerop (logand aflags #x20))))
+             (awid (ash (logand aflags #xC0) -6))
+             (bflags (cdr (assq 'bflags obj)))
+             (bp (not (zerop (logand bflags #x20))))
+             (bwid (ash (logand bflags #xC0) -6))
+             (total 0))
+        (when ap
+          (let* ((alen-bytes (g-mode--decode-width awid))
+                 (alen (g-mode--read-uint (buffer-substring-no-properties (point) (+ (point) alen-bytes)))))
+            (forward-char (+ alen-bytes alen))
+            (cl-incf total (+ alen-bytes alen))))
+        (when bp
+          (let* ((blen-bytes (g-mode--decode-width bwid))
+                 (blen (g-mode--read-uint (buffer-substring-no-properties (point) (+ (point) blen-bytes)))))
+            (forward-char (+ blen-bytes blen))
+            (cl-incf total (+ blen-bytes blen))))
+        total))))
+
+(defun g-mode--uint-to-bytes (val wid-bytes)
+  "Convert integer VAL to a big-endian raw string of WID-BYTES."
+  (let ((s (make-string wid-bytes 0)))
+    (dotimes (i wid-bytes)
+      (aset s (- wid-bytes 1 i) (logand val #xFF))
+      (setq val (ash val -8)))
+    s))
+
+(defun g-mode--calc-width-prefix (val)
+  "Return (wid . bytes) for numeric VAL."
+  (cond ((<= val #xFF) '(0 . 1))
+        ((<= val #xFFFF) '(1 . 2))
+        ((<= val #xFFFFFFFF) '(2 . 4))
+        (t '(3 . 8))))
+
+(defun g-mode-rename-object ()
+  "Rename the object at point. Modifies the buffer natively."
+  (interactive)
+  (let ((obj (tabulated-list-get-id))
+        (bin-buf g-mode--binary-buffer))
+    (unless obj (user-error "No object under point"))
+    (let* ((old-name (cdr (assq 'name obj)))
+           (hflags (cdr (assq 'hflags obj))))
+      (unless old-name (user-error "Cannot rename an unnamed or Free Space object"))
+      (let ((new-name (read-string (format "Rename '%s' to: " old-name) old-name)))
+        (when (string= old-name new-name)
+          (user-error "Name unchanged"))
+        
+        (let* ((old-nlen (1+ (length old-name)))
+               (new-nlen (1+ (length new-name)))
+               (name-pos (- (cdr (assq 'interior-pos obj)) old-nlen)))
+          (if (<= new-nlen old-nlen)
+              ;; Inline overwrite
+              (with-current-buffer bin-buf
+                (save-excursion
+                  (goto-char name-pos)
+                  (let ((inhibit-read-only t))
+                    (delete-char old-nlen)
+                    (insert new-name)
+                    (insert-char 0 (- old-nlen (length new-name))))))
+            ;; Append & Free
+            (let* ((n-res (g-mode--calc-width-prefix new-nlen))
+                   (new-nwid (car n-res))
+                   (new-nlen-bytes (cdr n-res))
+                   (nlen-str (g-mode--uint-to-bytes new-nlen new-nlen-bytes))
+                   (name-str (concat new-name (make-string 1 0)))
+                   (int-size (g-mode--interior-size obj bin-buf))
+                   (int-str (with-current-buffer bin-buf 
+                              (buffer-substring-no-properties 
+                               (cdr (assq 'interior-pos obj))
+                               (+ (cdr (assq 'interior-pos obj)) int-size))))
+                   (base-size (+ 6 new-nlen-bytes new-nlen int-size 1))
+                   (new-owid 0) (new-olen-bytes 1) (pad-bytes 0) (olen-chunks 0) (done nil))
+              
+              (while (not done)
+                (let* ((raw-size (+ base-size new-olen-bytes))
+                       (rem (% raw-size 8))
+                       (local-pad (if (= rem 0) 0 (- 8 rem)))
+                       (total-bytes (+ raw-size local-pad))
+                       (chunks (/ total-bytes 8))
+                       (req-owid (car (g-mode--calc-width-prefix chunks))))
+                  (if (<= req-owid new-owid)
+                      (setq pad-bytes local-pad olen-chunks chunks done t)
+                    (setq new-owid req-owid new-olen-bytes (cdr (g-mode--calc-width-prefix chunks))))))
+              
+              (let* ((olen-str (g-mode--uint-to-bytes olen-chunks new-olen-bytes))
+                     (hflags-no-wids (logand hflags #x07))
+                     (new-hflags (char-to-string (logior hflags-no-wids #x20 (ash new-owid 6) (ash new-nwid 3))))
+                     (header-str (concat (char-to-string g-mode-magic1) new-hflags
+                                         (char-to-string (cdr (assq 'aflags obj)))
+                                         (char-to-string (cdr (assq 'bflags obj)))
+                                         (char-to-string (cdr (assq 'major-type obj)))
+                                         (char-to-string (cdr (assq 'minor-type obj)))))
+                     (pad-str (make-string pad-bytes 0))
+                     (magic2-str (char-to-string g-mode-magic2))
+                     (full-str (concat header-str olen-str nlen-str name-str int-str pad-str magic2-str)))
+                
+                (with-current-buffer bin-buf
+                  (save-excursion
+                    (goto-char (point-max))
+                    (let ((inhibit-read-only t))
+                      (insert full-str))))
+                
+                (g-mode--free-object-at (cdr (assq 'pos obj)) bin-buf))))
+        (message "Renamed '%s' to '%s'." old-name new-name)
+        (g-mode--refresh-entries)
+        (tabulated-list-print t))))))
+
+(defvar g-mode-ui-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "v") 'g-mode-view-object)
     (define-key map (kbd "RET") 'g-mode-view-object)
     (define-key map (kbd "d") 'g-mode-delete-object)
+    (define-key map (kbd "R") 'g-mode-rename-object)
     (define-key map (kbd "h") 'g-mode-toggle-show-deleted)
     map)
   "Keymap for `g-mode-ui-mode'.")
@@ -274,7 +387,7 @@ Returns an alist of (KEY . VALUE) strings, or nil."
 
 (define-derived-mode g-mode-ui-mode tabulated-list-mode "g-mode-UI"
   "UI mode for browsing BRL-CAD database objects.
-\\{g-mode-ui-map}"
+\\{g-mode-ui-mode-map}"
   (setq tabulated-list-format [("Name" 30 t)
                                ("Type" 10 t)
                                ("Size"  8 t)

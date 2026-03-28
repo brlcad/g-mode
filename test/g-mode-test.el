@@ -133,5 +133,60 @@
         ;; Now it should be larger, as it includes the Free Space object!
         (should (> (length tabulated-list-entries) initial-entries))))))
 
+(ert-deftest g-mode-rename-inline-test ()
+  "Test in-place rename logic for smaller names."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally "references/geometry/moss.g")
+    (rename-buffer "moss.g")
+    (g-mode)
+    (with-current-buffer "*g: moss.g*"
+      ;; Force simulated point to "tor" row by searching the UI list
+      (goto-char (point-min))
+      (while (and (not (eobp))
+                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
+        (forward-line 1))
+      
+      (should (not (eobp)))
+      
+      ;; execute rename inline (shorter)
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "to")))
+        (g-mode-rename-object))
+      
+      ;; Verify it was renamed in UI
+      (should (cl-find "to" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+      ;; Verify binary buffer is modified
+      (should (buffer-modified-p (get-buffer "moss.g"))))))
+
+(ert-deftest g-mode-rename-append-test ()
+  "Test append rename logic for longer names."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally "references/geometry/moss.g")
+    (rename-buffer "moss.g")
+    (g-mode)
+    (with-current-buffer "*g: moss.g*"
+      (let ((orig-objects (length g-mode--objects)))
+        ;; Force simulated point to "tor" row by searching the UI list
+        (goto-char (point-min))
+        (while (and (not (eobp))
+                    (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
+          (forward-line 1))
+        
+        (should (not (eobp)))
+        
+        ;; execute rename append (longer)
+        (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "tor_modified")))
+          (g-mode-rename-object))
+        
+        ;; Verify it was renamed
+        (should (cl-find "tor_modified" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+        ;; Verify old one was marked Free
+        (should-not (cl-find "tor" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+        ;; We should have exactly 1 more object overall (the appended one, as the old became Free but is still in objects list)
+        (should (= (length g-mode--objects) (1+ orig-objects)))
+        ;; Verify binary buffer is modified
+        (should (buffer-modified-p (get-buffer "moss.g")))))))
+
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here
