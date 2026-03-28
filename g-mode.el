@@ -150,25 +150,42 @@ Returns an alist of (KEY . VALUE) strings, or nil."
 (defvar-local g-mode--objects nil
   "List of parsed objects from the binary database.")
 
+(defvar-local g-mode-show-deleted nil
+  "If non-nil, show Free Space (deleted) and invalid objects in the list.")
+
+(defun g-mode-toggle-show-deleted ()
+  "Toggle visibility of deleted/Free Space objects in the database."
+  (interactive)
+  (setq g-mode-show-deleted (not g-mode-show-deleted))
+  (g-mode--refresh-entries)
+  (tabulated-list-print t)
+  (message "Deleted objects are now %s." (if g-mode-show-deleted "visible" "hidden")))
+
 (defun g-mode--refresh-entries ()
   "Populate `tabulated-list-entries' from the binary buffer."
   (let ((objs (with-current-buffer g-mode--binary-buffer
                 (g-mode--scan-buffer))))
     (setq g-mode--objects objs)
-    (setq tabulated-list-entries
-          (mapcar (lambda (obj)
-                    (let* ((name (cdr (assq 'name obj)))
-                           (major (cdr (assq 'major-type obj)))
-                           (minor (cdr (assq 'minor-type obj)))
-                           (len (cdr (assq 'length obj)))
-                           (hflags (cdr (assq 'hflags obj)))
-                           (type-str (format "%02X:%02X" major minor)))
-                      (list obj ;; Use obj alist as the entry ID
-                            (vector (or name "<unnamed>")
-                                    type-str
-                                    (number-to-string len)
-                                    (format "%02X" hflags)))))
-                  objs))))
+    
+    (let ((entries nil))
+      (dolist (obj objs)
+        (let* ((hflags (cdr (assq 'hflags obj)))
+               (dli (logand hflags #x03))
+               (is-deleted (= dli 2)))
+          (when (or g-mode-show-deleted (not is-deleted))
+            (let* ((name (cdr (assq 'name obj)))
+                   (major (cdr (assq 'major-type obj)))
+                   (minor (cdr (assq 'minor-type obj)))
+                   (len (cdr (assq 'length obj)))
+                   (type-str (format "%02X:%02X" major minor))
+                   (display-name (if is-deleted "<Free Space>" (or name "<unnamed>"))))
+              (push (list obj
+                          (vector display-name
+                                  type-str
+                                  (number-to-string len)
+                                  (format "%02X" hflags)))
+                    entries)))))
+      (setq tabulated-list-entries (nreverse entries)))))
 
 (defun g-mode-view-object ()
   "Open a detailed view of the object at point."
@@ -245,6 +262,7 @@ Returns an alist of (KEY . VALUE) strings, or nil."
     (define-key map (kbd "v") 'g-mode-view-object)
     (define-key map (kbd "RET") 'g-mode-view-object)
     (define-key map (kbd "d") 'g-mode-delete-object)
+    (define-key map (kbd "h") 'g-mode-toggle-show-deleted)
     map)
   "Keymap for `g-mode-ui-mode'.")
 

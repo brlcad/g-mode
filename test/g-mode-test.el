@@ -95,13 +95,15 @@
     (rename-buffer "moss.g")
     (g-mode)
     (with-current-buffer "*g: moss.g*"
-      (let* ((orig-len (length g-mode--objects))
-             (tor-idx (cl-position "tor" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal)))
-        (should tor-idx)
+      (let* ((orig-len (length g-mode--objects)))
         
-        ;; Force simulated point to "tor" row
+        ;; Force simulated point to "tor" row by searching the UI list
         (goto-char (point-min))
-        (forward-line tor-idx)
+        (while (and (not (eobp))
+                    (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
+          (forward-line 1))
+        
+        (should (not (eobp)))
         
         ;; execute delete
         (g-mode-delete-object)
@@ -113,6 +115,23 @@
     
     ;; Verify binary buffer is modified
     (should (buffer-modified-p (get-buffer "moss.g")))))
+
+(ert-deftest g-mode-ui-toggle-test ()
+  "Test toggling of deleted items in UI."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally "references/geometry/moss.g")
+    (rename-buffer "moss.g")
+    (g-mode)
+    (with-current-buffer "*g: moss.g*"
+      ;; By default, show-deleted is nil, so DLI=2 (like the first chunk) is HIDDEN.
+      ;; The first object in moss.g is Free DB space.
+      (should-not g-mode-show-deleted)
+      (let ((initial-entries (length tabulated-list-entries)))
+        (g-mode-toggle-show-deleted)
+        (should g-mode-show-deleted)
+        ;; Now it should be larger, as it includes the Free Space object!
+        (should (> (length tabulated-list-entries) initial-entries))))))
 
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here
