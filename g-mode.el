@@ -42,7 +42,7 @@
   "Parse the 8-byte database header and return its alist structure.
 Returns nil if magic numbers do not match or buffer is too small."
   (when (>= (- (point-max) (point-min)) 8)
-    (let* ((bytes (buffer-substring-no-properties (point-min) (+ (point-min) 8)))
+    (let* ((bytes (string-as-unibyte (buffer-substring-no-properties (point-min) (+ (point-min) 8))))
            (header (bindat-unpack g-mode-db-header bytes)))
       (if (and (= (cdr (assq 'magic1 header)) g-mode-magic1)
                (= (cdr (assq 'magic2 header)) g-mode-magic2)
@@ -76,7 +76,7 @@ Returns an alist of metadata including 'length in bytes, and 'name if present."
   (save-excursion
     (goto-char start-pos)
     (when (= (char-after) g-mode-magic1)
-      (let* ((hbuf (buffer-substring-no-properties (point) (+ (point) 6)))
+      (let* ((hbuf (string-as-unibyte (buffer-substring-no-properties (point) (+ (point) 6))))
              (obj (bindat-unpack g-mode-object-fixed-header hbuf))
              (hflags (cdr (assq 'hflags obj)))
              (owid (ash (logand hflags #xC0) -6))
@@ -205,6 +205,9 @@ Returns an alist of (KEY . VALUE) strings, or nil."
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.g\\'" . g-mode))
 
+;;;###autoload
+(add-to-list 'file-coding-system-alist '("\\.g\\'" . no-conversion))
+
 (define-derived-mode g-mode tabulated-list-mode "g-mode"
   "Major mode for browsing and editing BRL-CAD .g binary files.
 \\{g-mode-map}"
@@ -216,6 +219,9 @@ Returns an alist of (KEY . VALUE) strings, or nil."
   
   ;; Make it read-only strictly so user doesn't accidentally type text into the binary buffer
   (setq buffer-read-only t)
+  
+  ;; Force unibyte mode for binary file reading
+  (set-buffer-multibyte nil)
   
   ;; Parse the file if it has a valid header
   (when (g-mode--parse-header)
