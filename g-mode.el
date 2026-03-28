@@ -268,8 +268,10 @@ Returns an alist of (KEY . VALUE) strings, or nil."
         (bin-buf g-mode--binary-buffer))
     (unless obj
       (user-error "No object under point"))
-    (let ((hflags (cdr (assq 'hflags obj))))
-      (when (= (logand hflags #x03) #x02)
+    ;; Read hflags live from the binary buffer, not the stale alist
+    (let ((live-hflags (with-current-buffer bin-buf
+                         (char-after (+ (cdr (assq 'pos obj)) 1)))))
+      (when (= (logand live-hflags #x03) #x02)
         (user-error "Object is already marked as Free Space"))
       
       (g-mode--free-object-at (cdr (assq 'pos obj)) bin-buf)
