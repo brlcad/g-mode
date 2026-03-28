@@ -1,0 +1,8 @@
+*.elc
+*~
+\#*\#
+/.cask/
+/dist/
+/.eldoc
+*.tar
+references/
