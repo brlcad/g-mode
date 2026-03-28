@@ -19,5 +19,17 @@
     (g-mode)
     (should (eq major-mode 'g-mode))))
 
+(ert-deftest g-mode-parse-header-test ()
+  "Test that the db header is correctly identified using the bindat type."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally "references/geometry/moss.g")
+    (let ((header (g-mode--parse-header)))
+      (should header)
+      (should (eq (cdr (assq 'magic1 header)) #x76))
+      (should (eq (cdr (assq 'magic2 header)) #x35))
+      (should (eq (cdr (assq 'length header)) 1))
+      (should (eq (cdr (assq 'hflags header)) 1)))))
+
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here
