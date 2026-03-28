@@ -49,6 +49,60 @@ Returns nil if magic numbers do not match."
         header
       nil)))
 
+(defconst g-mode-object-fixed-header
+  '((magic1     u8)
+    (hflags     u8)
+    (aflags     u8)
+    (bflags     u8)
+    (major-type u8)
+    (minor-type u8))
+  "Fixed 6-byte prefix common to all generic database objects.")
+
+(defun g-mode--decode-width (wid)
+  "Convert width code WID (0..3) to bytes (1, 2, 4, 8)."
+  (ash 1 wid))
+
+(defun g-mode--read-uint (bytes)
+  "Read big-endian unsigned integer from BYTES (unibyte string)."
+  (let ((val 0))
+    (dotimes (i (length bytes))
+      (setq val (+ (ash val 8) (aref bytes i))))
+    val))
+
+(defun g-mode--parse-object (start-pos)
+  "Parse an object starting at START-POS.
+Returns an alist of metadata including 'length in bytes, and 'name if present."
+  (save-excursion
+    (goto-char start-pos)
+    (when (= (char-after) g-mode-magic1)
+      (let* ((hbuf (buffer-substring-no-properties (point) (+ (point) 6)))
+             (obj (bindat-unpack g-mode-object-fixed-header hbuf))
+             (hflags (cdr (assq 'hflags obj)))
+             (owid (ash (logand hflags #xC0) -6))
+             (np (not (zerop (logand hflags #x20))))
+             (nwid (ash (logand hflags #x18) -3))
+             (olen-bytes (g-mode--decode-width owid)))
+        (forward-char 6)
+        
+        ;; Read Object_Length
+        (let* ((olen-buf (buffer-substring-no-properties (point) (+ (point) olen-bytes)))
+               (olen-chunks (g-mode--read-uint olen-buf)))
+          (forward-char olen-bytes)
+          (setq obj (nconc obj `((length . ,(* olen-chunks 8)))))
+          
+          ;; Read Name if present
+          (when np
+            (let* ((nlen-bytes (g-mode--decode-width nwid))
+                   (nlen-buf (buffer-substring-no-properties (point) (+ (point) nlen-bytes)))
+                   (nlen (g-mode--read-uint nlen-buf)))
+              (forward-char nlen-bytes)
+              ;; Read name data. It includes a null byte, so we use (1- nlen)
+              (let ((name-str (buffer-substring-no-properties (point) (+ (point) (1- nlen)))))
+                (forward-char nlen)
+                (setq obj (nconc obj `((name . ,name-str)))))))
+          
+          obj)))))
+
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.g\\'" . g-mode))
 

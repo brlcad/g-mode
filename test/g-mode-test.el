@@ -31,5 +31,26 @@
       (should (eq (cdr (assq 'length header)) 1))
       (should (eq (cdr (assq 'hflags header)) 1)))))
 
+(ert-deftest g-mode-parse-object-test ()
+  "Test that generic objects are correctly parsed."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally "references/geometry/moss.g")
+    
+    ;; First object after header is Free space (at byte 9)
+    ;; Note: Emacs points are 1-indexed, so byte index 8 is point 9.
+    (let ((obj1 (g-mode--parse-object 9)))
+      (should obj1)
+      (should (eq (cdr (assq 'magic1 obj1)) #x76))
+      (should (eq (cdr (assq 'length obj1)) 96))
+      (should (not (assq 'name obj1))))
+    
+    ;; Second object starts at 9 + 96 = 105
+    (let ((obj2 (g-mode--parse-object 105)))
+      (should obj2)
+      (should (eq (cdr (assq 'magic1 obj2)) #x76))
+      (should (eq (cdr (assq 'length obj2)) 80))
+      (should (equal (cdr (assq 'name obj2)) "tor")))))
+
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here
