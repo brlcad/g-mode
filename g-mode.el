@@ -40,14 +40,15 @@
 
 (defun g-mode--parse-header ()
   "Parse the 8-byte database header and return its alist structure.
-Returns nil if magic numbers do not match."
-  (let* ((bytes (buffer-substring-no-properties (point-min) (+ (point-min) 8)))
-         (header (bindat-unpack g-mode-db-header bytes)))
-    (if (and (= (cdr (assq 'magic1 header)) g-mode-magic1)
-             (= (cdr (assq 'magic2 header)) g-mode-magic2)
-             (= (cdr (assq 'hflags header)) 1)) ;; DLI=1 for Db header
-        header
-      nil)))
+Returns nil if magic numbers do not match or buffer is too small."
+  (when (>= (- (point-max) (point-min)) 8)
+    (let* ((bytes (buffer-substring-no-properties (point-min) (+ (point-min) 8)))
+           (header (bindat-unpack g-mode-db-header bytes)))
+      (if (and (= (cdr (assq 'magic1 header)) g-mode-magic1)
+               (= (cdr (assq 'magic2 header)) g-mode-magic2)
+               (= (cdr (assq 'hflags header)) 1)) ;; DLI=1 for Db header
+          header
+        nil))))
 
 (defconst g-mode-object-fixed-header
   '((magic1     u8)
@@ -119,17 +120,46 @@ Returns a list of parsed object metadata alists."
             (error "Failed to parse object at byte %d" (point))))))
     (nreverse objects)))
 
+(defvar-local g-mode--objects nil
+  "List of parsed objects in the current .g database.")
+
+(defun g-mode--refresh-entries ()
+  "Populate `tabulated-list-entries' from `g-mode--objects'."
+  (setq tabulated-list-entries
+        (mapcar (lambda (obj)
+                  (let* ((name (cdr (assq 'name obj)))
+                         (major (cdr (assq 'major-type obj)))
+                         (minor (cdr (assq 'minor-type obj)))
+                         (len (cdr (assq 'length obj)))
+                         (hflags (cdr (assq 'hflags obj)))
+                         (type-str (format "%02X:%02X" major minor)))
+                    (list obj ;; Use obj alist as the entry ID
+                          (vector (or name "<unnamed>")
+                                  type-str
+                                  (number-to-string len)
+                                  (format "%02X" hflags)))))
+                g-mode--objects)))
+
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.g\\'" . g-mode))
 
 (define-derived-mode g-mode tabulated-list-mode "g-mode"
   "Major mode for browsing and editing BRL-CAD .g binary files.
 \\{g-mode-map}"
+  ;; Tabulated list setup
   (setq tabulated-list-format [("Name" 30 t)
                                ("Type" 10 t)
                                ("Size"  8 t)
                                ("Flags" 6 nil)])
-  (setq tabulated-list-entries nil)
+  
+  ;; Make it read-only strictly so user doesn't accidentally type text into the binary buffer
+  (setq buffer-read-only t)
+  
+  ;; Parse the file if it has a valid header
+  (when (g-mode--parse-header)
+    (setq g-mode--objects (g-mode--scan-buffer))
+    (g-mode--refresh-entries))
+  
   (tabulated-list-init-header)
   (tabulated-list-print))
 

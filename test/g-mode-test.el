@@ -62,5 +62,17 @@
       (should (eq (cdr (assq 'magic1 (car objects))) #x76))
       (should (equal (cdr (assq 'length (car objects))) 96)))))
 
+(ert-deftest g-mode-ui-test ()
+  "Test the tabulated-list UI initialization."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally "references/geometry/moss.g")
+    (g-mode)
+    (should g-mode--objects)
+    (should tabulated-list-entries)
+    (should (> (length tabulated-list-entries) 10))
+    ;; Ensure that the buffer text has been modified to show tabulated-list
+    (should (string-match-p "tor" (buffer-string)))))
+
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here
