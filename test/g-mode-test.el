@@ -52,5 +52,15 @@
       (should (eq (cdr (assq 'length obj2)) 80))
       (should (equal (cdr (assq 'name obj2)) "tor")))))
 
+(ert-deftest g-mode-scan-buffer-test ()
+  "Test scanning an entire file."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally "references/geometry/moss.g")
+    (let ((objects (g-mode--scan-buffer)))
+      (should (> (length objects) 10))
+      (should (eq (cdr (assq 'magic1 (car objects))) #x76))
+      (should (equal (cdr (assq 'length (car objects))) 96)))))
+
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here

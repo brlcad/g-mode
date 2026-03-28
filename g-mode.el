@@ -103,6 +103,22 @@ Returns an alist of metadata including 'length in bytes, and 'name if present."
           
           obj)))))
 
+(defun g-mode--scan-buffer ()
+  "Scan the entire unibyte buffer for .g objects.
+Returns a list of parsed object metadata alists."
+  (let ((objects nil)
+        (pos (+ (point-min) 8))) ;; Skip 8-byte db header
+    (save-excursion
+      (goto-char pos)
+      (while (< (point) (point-max))
+        (let ((obj (g-mode--parse-object (point))))
+          (if obj
+              (progn
+                (push obj objects)
+                (goto-char (+ (point) (cdr (assq 'length obj)))))
+            (error "Failed to parse object at byte %d" (point))))))
+    (nreverse objects)))
+
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.g\\'" . g-mode))
 
