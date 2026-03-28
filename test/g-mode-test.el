@@ -188,5 +188,50 @@
         ;; Verify binary buffer is modified
         (should (buffer-modified-p (get-buffer "moss.g")))))))
 
+(ert-deftest g-mode-garbage-collect-test ()
+  "Test fault-resilient garbage collection compaction."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally "references/geometry/moss.g")
+    (rename-buffer "moss.g")
+    (let ((original-size (buffer-size)))
+      (g-mode)
+      (with-current-buffer "*g: moss.g*"
+        ;; Delete "tor"
+        (goto-char (point-min))
+        (while (and (not (eobp))
+                    (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
+          (forward-line 1))
+        (should (not (eobp)))
+        (g-mode-delete-object)
+
+        ;; Count objects before GC (show deleted to count all)
+        (let ((pre-gc-total (length g-mode--objects))
+              (pre-gc-active (length tabulated-list-entries)))
+
+          ;; Run GC (mock yes-or-no-p to auto-confirm)
+          (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+            (g-mode-garbage-collect))
+
+          ;; Buffer should have shrunk
+          (should (< (with-current-buffer (get-buffer "moss.g") (buffer-size))
+                     original-size))
+
+          ;; The deleted object should be gone from both the full scan and UI
+          (should-not (cl-find "tor" g-mode--objects
+                               :key (lambda (o) (cdr (assq 'name o)))
+                               :test 'equal))
+
+          ;; Active object count should be unchanged (minus the deleted one)
+          (should (= (length tabulated-list-entries) pre-gc-active))
+
+          ;; Total object count should have decreased (deleted object removed)
+          (should (< (length g-mode--objects) pre-gc-total))
+
+          ;; Remaining objects should still be parseable
+          (should (cl-find "_GLOBAL" g-mode--objects
+                           :key (lambda (o) (cdr (assq 'name o)))
+                           :test 'equal)))))))
+
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here

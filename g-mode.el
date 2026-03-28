@@ -369,12 +369,81 @@ Returns an alist of (KEY . VALUE) strings, or nil."
         (g-mode--refresh-entries)
         (tabulated-list-print t))))))
 
+(defun g-mode-garbage-collect ()
+  "Compact the database by reclaiming Free Space (deleted) objects.
+Uses a fault-resilient multi-phase approach:
+  Phase 1: Copy deleted objects to end of file (safety backup).
+  Phase 2: Shift active objects forward to close gaps.
+  Phase 3: Remove the tail containing backed-up deleted data."
+  (interactive)
+  (let* ((bin-buf g-mode--binary-buffer)
+         (objects (with-current-buffer bin-buf (g-mode--scan-buffer)))
+         (deleted nil)
+         (active nil)
+         (reclaimed 0))
+
+    ;; Categorize objects
+    (dolist (obj objects)
+      (if (= (logand (cdr (assq 'hflags obj)) #x03) 2)
+          (progn (push obj deleted)
+                 (cl-incf reclaimed (cdr (assq 'length obj))))
+        (push obj active)))
+    (setq deleted (nreverse deleted))
+    (setq active (nreverse active))
+
+    (if (null deleted)
+        (message "No deleted objects to compact.")
+      (when (yes-or-no-p
+             (format "Compact %d deleted objects, reclaiming %d bytes? "
+                     (length deleted) reclaimed))
+        (with-current-buffer bin-buf
+          (let ((inhibit-read-only t)
+                (original-end (point-max)))
+
+            ;; Phase 1: Safety backup - append deleted objects to end
+            (message "GC Phase 1/3: Backing up %d deleted objects..." (length deleted))
+            (save-excursion
+              (goto-char original-end)
+              (dolist (obj deleted)
+                (insert (buffer-substring-no-properties
+                         (cdr (assq 'pos obj))
+                         (+ (cdr (assq 'pos obj)) (cdr (assq 'length obj)))))))
+
+            ;; Phase 2: Collect active object data and rewrite compacted region.
+            ;; Reading from original positions is safe because Phase 1 only appended.
+            ;; We read all active data first, then replace, so no position confusion.
+            (message "GC Phase 2/3: Compacting %d active objects..." (length active))
+            (let ((active-data (mapconcat
+                                (lambda (obj)
+                                  (buffer-substring-no-properties
+                                   (cdr (assq 'pos obj))
+                                   (+ (cdr (assq 'pos obj)) (cdr (assq 'length obj)))))
+                                active "")))
+              (delete-region (+ (point-min) 8) original-end)
+              (goto-char (+ (point-min) 8))
+              (insert active-data))
+
+            ;; Phase 3: Remove the tail (backed-up deleted copies)
+            (message "GC Phase 3/3: Removing backup data...")
+            (let ((new-end (+ (point-min) 8
+                              (cl-reduce #'+ active
+                                         :key (lambda (o) (cdr (assq 'length o)))
+                                         :initial-value 0))))
+              (when (< new-end (point-max))
+                (delete-region new-end (point-max))))))
+
+        (message "GC complete: reclaimed %d bytes from %d deleted objects."
+                 reclaimed (length deleted))
+        (g-mode--refresh-entries)
+        (tabulated-list-print t)))))
+
 (defvar g-mode-ui-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "v") 'g-mode-view-object)
     (define-key map (kbd "RET") 'g-mode-view-object)
     (define-key map (kbd "d") 'g-mode-delete-object)
     (define-key map (kbd "R") 'g-mode-rename-object)
+    (define-key map (kbd "G") 'g-mode-garbage-collect)
     (define-key map (kbd "h") 'g-mode-toggle-show-deleted)
     map)
   "Keymap for `g-mode-ui-mode'.")
