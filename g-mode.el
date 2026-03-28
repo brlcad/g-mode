@@ -281,7 +281,10 @@ Returns an alist of (KEY . VALUE) strings, or nil."
       (tabulated-list-print t))))
 
 (defun g-mode--interior-size (obj bin-buf)
-  "Calculate exact byte size of Interior Data for OBJ."
+  "Calculate exact byte size of Interior Data for OBJ.
+Includes Attribute_Length + Attribute_Data and Body_Length + Body_Data.
+Does not include padding or Magic2 footer.  Result is clamped to the
+maximum possible interior span to guard against corrupt length fields."
   (with-current-buffer bin-buf
     (save-excursion
       (goto-char (cdr (assq 'interior-pos obj)))
@@ -291,18 +294,24 @@ Returns an alist of (KEY . VALUE) strings, or nil."
              (bflags (cdr (assq 'bflags obj)))
              (bp (not (zerop (logand bflags #x20))))
              (bwid (ash (logand bflags #xC0) -6))
+             (obj-end (+ (cdr (assq 'pos obj)) (cdr (assq 'length obj))))
+             (max-interior (max 0 (- obj-end (point) 1))) ;; up to magic2
              (total 0))
         (when ap
           (let* ((alen-bytes (g-mode--decode-width awid))
                  (alen (g-mode--read-uint (buffer-substring-no-properties (point) (+ (point) alen-bytes)))))
-            (forward-char (+ alen-bytes alen))
-            (cl-incf total (+ alen-bytes alen))))
-        (when bp
+            (if (> (+ total alen-bytes alen) max-interior)
+                (setq total max-interior)
+              (forward-char (+ alen-bytes alen))
+              (cl-incf total (+ alen-bytes alen)))))
+        (when (and bp (<= total max-interior))
           (let* ((blen-bytes (g-mode--decode-width bwid))
                  (blen (g-mode--read-uint (buffer-substring-no-properties (point) (+ (point) blen-bytes)))))
-            (forward-char (+ blen-bytes blen))
-            (cl-incf total (+ blen-bytes blen))))
-        total))))
+            (if (> (+ total blen-bytes blen) max-interior)
+                (setq total max-interior)
+              (forward-char (+ blen-bytes blen))
+              (cl-incf total (+ blen-bytes blen)))))
+        (min total max-interior)))))
 
 (defun g-mode--uint-to-bytes (val wid-bytes)
   "Convert integer VAL to a big-endian raw string of WID-BYTES."
@@ -336,14 +345,34 @@ Returns an alist of (KEY . VALUE) strings, or nil."
                (new-nlen (1+ (length new-name)))
                (name-pos (- (cdr (assq 'interior-pos obj)) old-nlen)))
           (if (<= new-nlen old-nlen)
-              ;; Inline overwrite
+              ;; Inline overwrite: update Name_Length, write shorter name,
+              ;; shift interior data forward to close the gap, and pad.
+              ;; Object_Length is unchanged so no other objects move.
               (with-current-buffer bin-buf
                 (save-excursion
-                  (goto-char name-pos)
-                  (let ((inhibit-read-only t))
-                    (delete-char old-nlen)
-                    (insert new-name)
-                    (insert-char 0 (- old-nlen (length new-name))))))
+                  (let* ((inhibit-read-only t)
+                         (nwid (ash (logand hflags #x18) -3))
+                         (nlen-bytes (g-mode--decode-width nwid))
+                         (nlen-field-pos (- name-pos nlen-bytes))
+                         (obj-end (+ (cdr (assq 'pos obj)) (cdr (assq 'length obj))))
+                         (magic2-pos (1- obj-end))
+                         (int-size (g-mode--interior-size obj bin-buf))
+                         (interior-data (buffer-substring-no-properties
+                                         (cdr (assq 'interior-pos obj))
+                                         (+ (cdr (assq 'interior-pos obj)) int-size)))
+                         (new-name-data (concat new-name (make-string 1 0)))
+                         (available (- magic2-pos name-pos))
+                         (padding-size (- available new-nlen int-size))
+                         (replacement (concat new-name-data interior-data
+                                             (make-string padding-size 0))))
+                    ;; Update Name_Length field (same width, no position shift)
+                    (goto-char nlen-field-pos)
+                    (delete-char nlen-bytes)
+                    (insert (g-mode--uint-to-bytes new-nlen nlen-bytes))
+                    ;; Replace name + interior + padding region in one shot
+                    (delete-region name-pos magic2-pos)
+                    (goto-char name-pos)
+                    (insert replacement))))
             ;; Append & Free
             (let* ((n-res (g-mode--calc-width-prefix new-nlen))
                    (new-nwid (car n-res))
