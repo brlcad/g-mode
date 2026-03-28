@@ -13,11 +13,10 @@
 (require 'g-mode (expand-file-name "../g-mode.el" (file-name-directory (or load-file-name buffer-file-name))))
 
 (ert-deftest g-mode-basic-test ()
-  "Ensure the g-mode feature loads correctly and provides tabulated-list capabilities."
+  "Ensure the g-mode feature loads correctly and intercepts invalid magically."
   (should (fboundp 'g-mode))
   (with-temp-buffer
-    (g-mode)
-    (should (eq major-mode 'g-mode))))
+    (should-error (g-mode))))
 
 (ert-deftest g-mode-parse-header-test ()
   "Test that the db header is correctly identified using the bindat type."
@@ -67,12 +66,13 @@
   (with-temp-buffer
     (set-buffer-multibyte nil)
     (insert-file-contents-literally "references/geometry/moss.g")
+    (rename-buffer "moss.g")
     (g-mode)
-    (should g-mode--objects)
-    (should tabulated-list-entries)
-    (should (> (length tabulated-list-entries) 10))
-    ;; Ensure that the buffer text has been modified to show tabulated-list
-    (should (string-match-p "tor" (buffer-string)))))
+    (with-current-buffer "*g: moss.g*"
+      (should g-mode--objects)
+      (should tabulated-list-entries)
+      (should (> (length tabulated-list-entries) 10))
+      (should (string-match-p "tor" (buffer-string))))))
 
 (ert-deftest g-mode-attributes-test ()
   "Test attribute parsing on an object with attributes."
@@ -86,6 +86,33 @@
         (should attrs)
         ;; typically there is a 'title' or 'units' attribute
         (should (assoc "title" attrs))))))
+
+(ert-deftest g-mode-delete-object-test ()
+  "Test marking an object as Free Space."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally "references/geometry/moss.g")
+    (rename-buffer "moss.g")
+    (g-mode)
+    (with-current-buffer "*g: moss.g*"
+      (let* ((orig-len (length g-mode--objects))
+             (tor-idx (cl-position "tor" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal)))
+        (should tor-idx)
+        
+        ;; Force simulated point to "tor" row
+        (goto-char (point-min))
+        (forward-line tor-idx)
+        
+        ;; execute delete
+        (g-mode-delete-object)
+        
+        ;; Now 'tor' should be gone (its name is lost because NP=0)
+        (should-not (cl-find "tor" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+        
+        (should (= (length g-mode--objects) orig-len))))
+    
+    ;; Verify binary buffer is modified
+    (should (buffer-modified-p (get-buffer "moss.g")))))
 
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here

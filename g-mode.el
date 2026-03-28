@@ -102,7 +102,7 @@ Returns an alist of metadata including 'length in bytes, and 'name if present."
                 (forward-char nlen)
                 (setq obj (nconc obj `((name . ,name-str)))))))
           
-          (setq obj (nconc obj `((interior-pos . ,(point)))))
+          (setq obj (nconc obj `((pos . ,start-pos) (interior-pos . ,(point)))))
           obj)))))
 
 (defun g-mode--scan-buffer ()
@@ -144,31 +144,37 @@ Returns an alist of (KEY . VALUE) strings, or nil."
                 (push (cons (pop parts) (pop parts)) attrs))
               (nreverse attrs))))))))
 
+(defvar-local g-mode--binary-buffer nil
+  "Reference to the hidden unibyte buffer containing the raw .g file data.")
+
 (defvar-local g-mode--objects nil
-  "List of parsed objects in the current .g database.")
+  "List of parsed objects from the binary database.")
 
 (defun g-mode--refresh-entries ()
-  "Populate `tabulated-list-entries' from `g-mode--objects'."
-  (setq tabulated-list-entries
-        (mapcar (lambda (obj)
-                  (let* ((name (cdr (assq 'name obj)))
-                         (major (cdr (assq 'major-type obj)))
-                         (minor (cdr (assq 'minor-type obj)))
-                         (len (cdr (assq 'length obj)))
-                         (hflags (cdr (assq 'hflags obj)))
-                         (type-str (format "%02X:%02X" major minor)))
-                    (list obj ;; Use obj alist as the entry ID
-                          (vector (or name "<unnamed>")
-                                  type-str
-                                  (number-to-string len)
-                                  (format "%02X" hflags)))))
-                g-mode--objects)))
+  "Populate `tabulated-list-entries' from the binary buffer."
+  (let ((objs (with-current-buffer g-mode--binary-buffer
+                (g-mode--scan-buffer))))
+    (setq g-mode--objects objs)
+    (setq tabulated-list-entries
+          (mapcar (lambda (obj)
+                    (let* ((name (cdr (assq 'name obj)))
+                           (major (cdr (assq 'major-type obj)))
+                           (minor (cdr (assq 'minor-type obj)))
+                           (len (cdr (assq 'length obj)))
+                           (hflags (cdr (assq 'hflags obj)))
+                           (type-str (format "%02X:%02X" major minor)))
+                      (list obj ;; Use obj alist as the entry ID
+                            (vector (or name "<unnamed>")
+                                    type-str
+                                    (number-to-string len)
+                                    (format "%02X" hflags)))))
+                  objs))))
 
 (defun g-mode-view-object ()
   "Open a detailed view of the object at point."
   (interactive)
   (let ((obj (tabulated-list-get-id))
-        (src-buf (current-buffer)))
+        (src-buf g-mode--binary-buffer))
     (unless obj
       (user-error "No object under point"))
     (let* ((name (cdr (assq 'name obj)))
@@ -195,12 +201,52 @@ Returns an alist of (KEY . VALUE) strings, or nil."
         (special-mode)
         (display-buffer (current-buffer))))))
 
-(defvar g-mode-map
+(defun g-mode--write-byte (pos byte)
+  "Write a single BYTE at POS in the current buffer, overwriting 1 char."
+  (save-excursion
+    (goto-char pos)
+    (let ((inhibit-read-only t))
+      (delete-char 1)
+      (insert byte))))
+
+(defun g-mode-delete-object ()
+  "Mark the object at point as Free Storage (DLI=2) natively in the .g file."
+  (interactive)
+  (let ((obj (tabulated-list-get-id))
+        (bin-buf g-mode--binary-buffer))
+    (unless obj
+      (user-error "No object under point"))
+    (let* ((pos (cdr (assq 'pos obj)))
+           (hflags (cdr (assq 'hflags obj)))
+           (owid (ash (logand hflags #xC0) -6))
+           ;; New HFlags: keep OWid, set DLI=2
+           (new-hflags (logior (ash owid 6) #x02))
+           ;; New AFlags: AP=0, AWid=0
+           (new-aflags #x00)
+           ;; New BFlags: BP=1, BWid=0
+           (new-bflags #x20))
+      
+      (when (= (logand hflags #x03) #x02)
+        (user-error "Object is already marked as Free Space"))
+      
+      ;; Write directly into the unibyte binary buffer
+      (with-current-buffer bin-buf
+        (g-mode--write-byte (+ pos 1) new-hflags)
+        (g-mode--write-byte (+ pos 2) new-aflags)
+        (g-mode--write-byte (+ pos 3) new-bflags))
+      
+      (message "Marked object '%s' as Free Space." (or (cdr (assq 'name obj)) "unnamed"))
+      ;; Refresh the view
+      (g-mode--refresh-entries)
+      (tabulated-list-print t))))
+
+(defvar g-mode-ui-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "v") 'g-mode-view-object)
     (define-key map (kbd "RET") 'g-mode-view-object)
+    (define-key map (kbd "d") 'g-mode-delete-object)
     map)
-  "Keymap for `g-mode'.")
+  "Keymap for `g-mode-ui-mode'.")
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.g\\'" . g-mode))
@@ -208,28 +254,37 @@ Returns an alist of (KEY . VALUE) strings, or nil."
 ;;;###autoload
 (add-to-list 'file-coding-system-alist '("\\.g\\'" . no-conversion))
 
-(define-derived-mode g-mode tabulated-list-mode "g-mode"
-  "Major mode for browsing and editing BRL-CAD .g binary files.
-\\{g-mode-map}"
-  ;; Tabulated list setup
+(define-derived-mode g-mode-ui-mode tabulated-list-mode "g-mode-UI"
+  "UI mode for browsing BRL-CAD database objects.
+\\{g-mode-ui-map}"
   (setq tabulated-list-format [("Name" 30 t)
                                ("Type" 10 t)
                                ("Size"  8 t)
                                ("Flags" 6 nil)])
-  
-  ;; Make it read-only strictly so user doesn't accidentally type text into the binary buffer
-  (setq buffer-read-only t)
-  
-  ;; Force unibyte mode for binary file reading
+  (setq buffer-read-only t))
+
+(defun g-mode ()
+  "Major mode wrapper for BRL-CAD .g files.
+Maintains the binary file buffer and creates a UI interface buffer."
+  (interactive)
+  ;; Ensure the binary buffer is pristine and protected
   (set-buffer-multibyte nil)
+  (setq buffer-read-only t)
+  (buffer-disable-undo)
   
-  ;; Parse the file if it has a valid header
-  (when (g-mode--parse-header)
-    (setq g-mode--objects (g-mode--scan-buffer))
-    (g-mode--refresh-entries))
-  
-  (tabulated-list-init-header)
-  (tabulated-list-print))
+  (if (not (g-mode--parse-header))
+      (error "Not a valid BRL-CAD .g geometry database (magic missing)")
+    ;; Create or get UI buffer
+    (let* ((bin-buf (current-buffer))
+           (ui-buf-name (format "*g: %s*" (buffer-name)))
+           (ui-buf (get-buffer-create ui-buf-name)))
+      (with-current-buffer ui-buf
+        (g-mode-ui-mode)
+        (setq g-mode--binary-buffer bin-buf)
+        (g-mode--refresh-entries)
+        (tabulated-list-init-header)
+        (tabulated-list-print))
+      (pop-to-buffer ui-buf))))
 
 (provide 'g-mode)
 
