@@ -74,5 +74,18 @@
     ;; Ensure that the buffer text has been modified to show tabulated-list
     (should (string-match-p "tor" (buffer-string)))))
 
+(ert-deftest g-mode-attributes-test ()
+  "Test attribute parsing on an object with attributes."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally "references/geometry/moss.g")
+    (let* ((objects (g-mode--scan-buffer))
+           (global-obj (cl-find "_GLOBAL" objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal)))
+      (should global-obj)
+      (let ((attrs (g-mode--parse-attributes global-obj)))
+        (should attrs)
+        ;; typically there is a 'title' or 'units' attribute
+        (should (assoc "title" attrs))))))
+
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here

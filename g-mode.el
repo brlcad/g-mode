@@ -102,6 +102,7 @@ Returns an alist of metadata including 'length in bytes, and 'name if present."
                 (forward-char nlen)
                 (setq obj (nconc obj `((name . ,name-str)))))))
           
+          (setq obj (nconc obj `((interior-pos . ,(point)))))
           obj)))))
 
 (defun g-mode--scan-buffer ()
@@ -119,6 +120,29 @@ Returns a list of parsed object metadata alists."
                 (goto-char (+ (point) (cdr (assq 'length obj)))))
             (error "Failed to parse object at byte %d" (point))))))
     (nreverse objects)))
+
+(defun g-mode--parse-attributes (obj)
+  "Parse attributes out of OBJ at its `interior-pos` in the current buffer.
+Returns an alist of (KEY . VALUE) strings, or nil."
+  (save-excursion
+    (goto-char (cdr (assq 'interior-pos obj)))
+    (let* ((aflags (cdr (assq 'aflags obj)))
+           (awid (ash (logand aflags #xC0) -6))
+           (ap (not (zerop (logand aflags #x20))))
+           (az (logand aflags #x07)))
+      (when ap
+        (let* ((alen-bytes (g-mode--decode-width awid))
+               (alen-buf (buffer-substring-no-properties (point) (+ (point) alen-bytes)))
+               (alen (g-mode--read-uint alen-buf)))
+          (forward-char alen-bytes)
+          (if (not (zerop az))
+              '((compressed . "true")) ;; Unimplemented for now
+            (let* ((attr-data (buffer-substring-no-properties (point) (+ (point) alen)))
+                   (parts (split-string attr-data "\0" t))
+                   (attrs nil))
+              (while (>= (length parts) 2)
+                (push (cons (pop parts) (pop parts)) attrs))
+              (nreverse attrs))))))))
 
 (defvar-local g-mode--objects nil
   "List of parsed objects in the current .g database.")
@@ -139,6 +163,44 @@ Returns a list of parsed object metadata alists."
                                   (number-to-string len)
                                   (format "%02X" hflags)))))
                 g-mode--objects)))
+
+(defun g-mode-view-object ()
+  "Open a detailed view of the object at point."
+  (interactive)
+  (let ((obj (tabulated-list-get-id))
+        (src-buf (current-buffer)))
+    (unless obj
+      (user-error "No object under point"))
+    (let* ((name (cdr (assq 'name obj)))
+           (buf-name (format "*g-mode: %s*" (or name "unnamed")))
+           (attrs (with-current-buffer src-buf
+                    (g-mode--parse-attributes obj))))
+      (with-current-buffer (get-buffer-create buf-name)
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert (format "Object: %s\n" (or name "<unnamed>")))
+          (insert (format "Size:   %d bytes\n" (cdr (assq 'length obj))))
+          (insert (format "Type:   %02X:%02X\n"
+                          (cdr (assq 'major-type obj))
+                          (cdr (assq 'minor-type obj))))
+          (insert (format "HFlags: %02X\n" (cdr (assq 'hflags obj))))
+          (insert (format "AFlags: %02X\n" (cdr (assq 'aflags obj))))
+          (insert (format "BFlags: %02X\n" (cdr (assq 'bflags obj))))
+          (insert "\n-- Attributes --\n")
+          (if attrs
+              (dolist (attr attrs)
+                (insert (format "%s: %s\n" (car attr) (cdr attr))))
+            (insert "None.\n"))
+          (goto-char (point-min)))
+        (special-mode)
+        (display-buffer (current-buffer))))))
+
+(defvar g-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "v") 'g-mode-view-object)
+    (define-key map (kbd "RET") 'g-mode-view-object)
+    map)
+  "Keymap for `g-mode'.")
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.g\\'" . g-mode))
