@@ -109,7 +109,9 @@ Returns an alist of metadata including 'length in bytes, and 'name if present."
 
 (defun g-mode--scan-buffer ()
   "Scan the entire unibyte buffer for .g objects.
-Returns a list of parsed object metadata alists."
+Returns a list of parsed object metadata alists.
+Corrupt or unparseable regions are recorded with a `corrupt' flag
+and skipped over by scanning for the next valid magic byte."
   (let ((objects nil)
         (pos (+ (point-min) 8))) ;; Skip 8-byte db header
     (save-excursion
@@ -120,7 +122,23 @@ Returns a list of parsed object metadata alists."
               (progn
                 (push obj objects)
                 (goto-char (+ (point) (cdr (assq 'length obj)))))
-            (error "Failed to parse object at byte %d" (point))))))
+            ;; Corrupt region — record it and try to recover
+            (let ((corrupt-start (point)))
+              (forward-char 1)
+              (while (and (< (point) (point-max))
+                          (not (and (= (char-after) g-mode-magic1)
+                                    (g-mode--parse-object (point)))))
+                (forward-char 1))
+              (push `((corrupt . t)
+                      (name . nil)
+                      (length . ,(- (point) corrupt-start))
+                      (hflags . 0) (aflags . 0) (bflags . 0)
+                      (major-type . 0) (minor-type . 0) (magic1 . 0)
+                      (pos . ,corrupt-start)
+                      (interior-pos . ,corrupt-start))
+                    objects)
+              (message "Warning: corrupt region at byte %d (%d bytes)"
+                       corrupt-start (- (point) corrupt-start)))))))
     (nreverse objects)))
 
 (defun g-mode--parse-attributes (obj)
@@ -173,14 +191,17 @@ Returns an alist of (KEY . VALUE) strings, or nil."
       (dolist (obj objs)
         (let* ((hflags (cdr (assq 'hflags obj)))
                (dli (logand hflags #x03))
-               (is-deleted (= dli 2)))
-          (when (or g-mode-show-deleted (not is-deleted))
+               (is-deleted (= dli 2))
+               (is-corrupt (cdr (assq 'corrupt obj))))
+          (when (or g-mode-show-deleted (and (not is-deleted) (not is-corrupt)))
             (let* ((name (cdr (assq 'name obj)))
                    (major (cdr (assq 'major-type obj)))
                    (minor (cdr (assq 'minor-type obj)))
                    (len (cdr (assq 'length obj)))
                    (type-str (format "%02X:%02X" major minor))
-                   (display-name (if is-deleted "<Free Space>" (or name "<unnamed>"))))
+                   (display-name (cond (is-corrupt "<corrupt>")
+                                       (is-deleted "<Free Space>")
+                                       (t (or name "<unnamed>")))))
               (push (list obj
                           (vector display-name
                                   type-str
