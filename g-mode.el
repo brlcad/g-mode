@@ -250,7 +250,12 @@ Returns an alist of (KEY . VALUE) strings, or nil."
       (insert byte))))
 
 (defun g-mode--free-object-at (pos bin-buf)
-  "Mark object at POS as Free Storage natively in BIN-BUF."
+  "Mark object at POS as Free Storage natively in BIN-BUF.
+This implements a 'soft delete' that only modifies the object header
+flags to set DLI=2 (Free Space). It does NOT zero out the interior
+data or fill it with a null body as the full specification suggests,
+which allows for easier data recovery if an object was deleted
+accidentally."
   (with-current-buffer bin-buf
     (let* ((hflags (char-after (+ pos 1)))
            (owid (ash (logand hflags #xC0) -6))
