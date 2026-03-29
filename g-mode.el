@@ -164,6 +164,57 @@ Returns an alist of (KEY . VALUE) strings, or nil."
                 (push (cons (pop parts) (pop parts)) attrs))
               (nreverse attrs))))))))
 
+(defconst g-mode-type-names
+  '(((1 . 1) . "Combination")
+    ((1 . 2) . "Grip")
+    ((1 . 3) . "Joint")
+    ((2 . 1) . "Torus (TOR)")
+    ((2 . 2) . "TGC")
+    ((2 . 3) . "Ellipsoid (ELL)")
+    ((2 . 4) . "ARB8")
+    ((2 . 5) . "ARS")
+    ((2 . 6) . "Half-Space")
+    ((2 . 7) . "REC")
+    ((2 . 8) . "Polysolid")
+    ((2 . 9) . "B-Spline")
+    ((2 . 10) . "Sphere")
+    ((2 . 11) . "NMG")
+    ((2 . 12) . "EBM")
+    ((2 . 13) . "Volume (VOL)")
+    ((2 . 14) . "ARBN")
+    ((2 . 15) . "Pipe")
+    ((2 . 16) . "Particle")
+    ((2 . 17) . "RPC")
+    ((2 . 18) . "RHC")
+    ((2 . 19) . "EPA")
+    ((2 . 20) . "EHY")
+    ((2 . 21) . "ETO")
+    ((2 . 24) . "Height Field")
+    ((2 . 25) . "Displacement")
+    ((2 . 26) . "Sketch")
+    ((2 . 27) . "Extrude")
+    ((2 . 28) . "Submodel")
+    ((2 . 29) . "Cline")
+    ((2 . 30) . "BOT")
+    ((2 . 31) . "Combination")
+    ((2 . 32) . "Bin-Exp")
+    ((2 . 33) . "Bin-Unif")
+    ((2 . 34) . "Bin-MIME")
+    ((2 . 35) . "Superell")
+    ((2 . 36) . "Metaball")
+    ((2 . 37) . "Brep")
+    ((2 . 38) . "HYP")
+    ((2 . 39) . "Constraint")
+    ((2 . 40) . "Revolution")
+    ((2 . 41) . "PNTS")
+    ((3 . 0) . "Attribute-Only"))
+  "Alist mapping (major . minor) type pairs to human-readable names.")
+
+(defun g-mode--get-type-name (major minor)
+  "Return human-readable name for MAJOR/MINOR type, or 'Unknown'."
+  (or (cdr (assoc (cons major minor) g-mode-type-names))
+      "Unknown"))
+
 (defvar-local g-mode--binary-buffer nil
   "Reference to the hidden unibyte buffer containing the raw .g file data.")
 
@@ -198,7 +249,8 @@ Returns an alist of (KEY . VALUE) strings, or nil."
                    (major (cdr (assq 'major-type obj)))
                    (minor (cdr (assq 'minor-type obj)))
                    (len (cdr (assq 'length obj)))
-                   (type-str (format "%02X:%02X" major minor))
+                   (type-name (g-mode--get-type-name major minor))
+                   (type-str (format "%s (%d,%d)" type-name major minor))
                    (display-name (cond (is-corrupt "<corrupt>")
                                        (is-deleted "<Free Space>")
                                        (t (or name "<unnamed>")))))
@@ -502,6 +554,8 @@ Uses a fault-resilient multi-phase approach:
     (define-key map (kbd "R") 'g-mode-rename-object)
     (define-key map (kbd "G") 'g-mode-garbage-collect)
     (define-key map (kbd "h") 'g-mode-toggle-show-deleted)
+    (define-key map (kbd "s") 'g-mode-save)
+    (define-key map (kbd "C-x C-s") 'g-mode-save)
     map)
   "Keymap for `g-mode-ui-mode'.")
 
@@ -515,10 +569,19 @@ Uses a fault-resilient multi-phase approach:
   "UI mode for browsing BRL-CAD database objects.
 \\{g-mode-ui-mode-map}"
   (setq tabulated-list-format [("Name" 30 t)
-                               ("Type" 10 t)
+                               ("Type" 25 t)
                                ("Size"  8 t)
                                ("Flags" 6 nil)])
   (setq buffer-read-only t))
+
+(defun g-mode-save ()
+  "Save the changes in the hidden binary buffer to its file."
+  (interactive)
+  (if (not (buffer-live-p g-mode--binary-buffer))
+      (error "Binary buffer is no longer live")
+    (with-current-buffer g-mode--binary-buffer
+      (save-buffer))
+    (message "Database saved.")))
 
 (defun g-mode ()
   "Major mode wrapper for BRL-CAD .g files.
@@ -533,8 +596,8 @@ Maintains the binary file buffer and creates a UI interface buffer."
       (error "Not a valid BRL-CAD .g geometry database (magic missing)")
     ;; Create or get UI buffer
     (let* ((bin-buf (current-buffer))
-           (ui-buf-name (format "*g: %s*" (buffer-name)))
-           (ui-buf (get-buffer-create ui-buf-name)))
+           (ui-name (format "*g: %s*" (buffer-name)))
+           (ui-buf (get-buffer-create (generate-new-buffer-name ui-name))))
       (with-current-buffer ui-buf
         (g-mode-ui-mode)
         (setq g-mode--binary-buffer bin-buf)
