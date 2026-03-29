@@ -61,18 +61,30 @@
       (should (eq (cdr (assq 'magic1 (car objects))) #x76))
       (should (equal (cdr (assq 'length (car objects))) 96)))))
 
+(defmacro with-g-mode-test-setup (filename &rest body)
+  "Set up a g-mode test environment with FILENAME and clean up afterwards."
+  (declare (indent 1) (debug t))
+  `(with-temp-buffer
+     (set-buffer-multibyte nil)
+     (insert-file-contents-literally ,filename)
+     (let* ((bin-buf (current-buffer))
+            (ui-buf (g-mode)))
+       (unwind-protect
+           (with-current-buffer ui-buf
+             ,@body)
+         (when (buffer-live-p ui-buf) (kill-buffer ui-buf))
+         ;; bin-buf is handled by with-temp-buffer normally,
+         ;; but g-mode sets buffer-read-only, which might cause issues
+         ;; if with-temp-buffer tries to erase it.
+         (with-current-buffer bin-buf (setq buffer-read-only nil))))))
+
 (ert-deftest g-mode-ui-test ()
   "Test the tabulated-list UI initialization."
-  (with-temp-buffer
-    (set-buffer-multibyte nil)
-    (insert-file-contents-literally "references/geometry/moss.g")
-    (rename-buffer "moss.g")
-    (g-mode)
-    (with-current-buffer "*g: moss.g*"
-      (should g-mode--objects)
-      (should tabulated-list-entries)
-      (should (> (length tabulated-list-entries) 10))
-      (should (string-match-p "tor" (buffer-string))))))
+  (with-g-mode-test-setup "references/geometry/moss.g"
+    (should g-mode--objects)
+    (should tabulated-list-entries)
+    (should (> (length tabulated-list-entries) 10))
+    (should (string-match-p "tor" (buffer-string)))))
 
 (ert-deftest g-mode-attributes-test ()
   "Test attribute parsing on an object with attributes."
@@ -89,149 +101,111 @@
 
 (ert-deftest g-mode-delete-object-test ()
   "Test marking an object as Free Space."
-  (with-temp-buffer
-    (set-buffer-multibyte nil)
-    (insert-file-contents-literally "references/geometry/moss.g")
-    (rename-buffer "moss.g")
-    (g-mode)
-    (with-current-buffer "*g: moss.g*"
-      (let* ((orig-len (length g-mode--objects)))
-        
-        ;; Force simulated point to "tor" row by searching the UI list
-        (goto-char (point-min))
-        (while (and (not (eobp))
-                    (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
-          (forward-line 1))
-        
-        (should (not (eobp)))
-        
-        ;; execute delete
-        (g-mode-delete-object)
-        
-        ;; Now 'tor' should be gone (its name is lost because NP=0)
-        (should-not (cl-find "tor" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
-        
-        (should (= (length g-mode--objects) orig-len))))
-    
-    ;; Verify binary buffer is modified
-    (should (buffer-modified-p (get-buffer "moss.g")))))
-
-(ert-deftest g-mode-ui-toggle-test ()
-  "Test toggling of deleted items in UI."
-  (with-temp-buffer
-    (set-buffer-multibyte nil)
-    (insert-file-contents-literally "references/geometry/moss.g")
-    (rename-buffer "moss.g")
-    (g-mode)
-    (with-current-buffer "*g: moss.g*"
-      ;; By default, show-deleted is nil, so DLI=2 (like the first chunk) is HIDDEN.
-      ;; The first object in moss.g is Free DB space.
-      (should-not g-mode-show-deleted)
-      (let ((initial-entries (length tabulated-list-entries)))
-        (g-mode-toggle-show-deleted)
-        (should g-mode-show-deleted)
-        ;; Now it should be larger, as it includes the Free Space object!
-        (should (> (length tabulated-list-entries) initial-entries))))))
-
-(ert-deftest g-mode-rename-inline-test ()
-  "Test in-place rename logic for smaller names."
-  (with-temp-buffer
-    (set-buffer-multibyte nil)
-    (insert-file-contents-literally "references/geometry/moss.g")
-    (rename-buffer "moss.g")
-    (g-mode)
-    (with-current-buffer "*g: moss.g*"
+  (with-g-mode-test-setup "references/geometry/moss.g"
+    (let ((orig-len (length g-mode--objects)))
       ;; Force simulated point to "tor" row by searching the UI list
       (goto-char (point-min))
       (while (and (not (eobp))
                   (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
         (forward-line 1))
-      
-      (should (not (eobp)))
-      
-      ;; execute rename inline (shorter)
-      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "to")))
-        (g-mode-rename-object))
-      
-      ;; Verify it was renamed in UI
-      (should (cl-find "to" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+      (should-not (eobp))
+      ;; execute delete
+      (g-mode-delete-object)
+      ;; Now 'tor' should be gone (its name is lost because NP=0)
+      (should-not (cl-find "tor" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+      (should (= (length g-mode--objects) orig-len))
       ;; Verify binary buffer is modified
-      (should (buffer-modified-p (get-buffer "moss.g"))))))
+      (with-current-buffer g-mode--binary-buffer
+        (should (buffer-modified-p))))))
+
+(ert-deftest g-mode-ui-toggle-test ()
+  "Test toggling of deleted items in UI."
+  (with-g-mode-test-setup "references/geometry/moss.g"
+    ;; By default, show-deleted is nil, so DLI=2 (like the first chunk) is HIDDEN.
+    (should-not g-mode-show-deleted)
+    (let ((initial-entries (length tabulated-list-entries)))
+      (g-mode-toggle-show-deleted)
+      (should g-mode-show-deleted)
+      ;; Now it should be larger, as it includes the Free Space object!
+      (should (> (length tabulated-list-entries) initial-entries)))))
+
+(ert-deftest g-mode-rename-inline-test ()
+  "Test in-place rename logic for smaller names."
+  (with-g-mode-test-setup "references/geometry/moss.g"
+    ;; Force simulated point to "tor" row by searching the UI list
+    (goto-char (point-min))
+    (while (and (not (eobp))
+                (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
+      (forward-line 1))
+    (should-not (eobp))
+    ;; execute rename inline (shorter)
+    (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "to")))
+      (g-mode-rename-object))
+    ;; Verify it was renamed in UI
+    (should (cl-find "to" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+    ;; Verify binary buffer is modified
+    (with-current-buffer g-mode--binary-buffer
+      (should (buffer-modified-p)))))
 
 (ert-deftest g-mode-rename-append-test ()
   "Test append rename logic for longer names."
-  (with-temp-buffer
-    (set-buffer-multibyte nil)
-    (insert-file-contents-literally "references/geometry/moss.g")
-    (rename-buffer "moss.g")
-    (g-mode)
-    (with-current-buffer "*g: moss.g*"
-      (let ((orig-objects (length g-mode--objects)))
-        ;; Force simulated point to "tor" row by searching the UI list
-        (goto-char (point-min))
-        (while (and (not (eobp))
-                    (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
-          (forward-line 1))
-        
-        (should (not (eobp)))
-        
-        ;; execute rename append (longer)
-        (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "tor_modified")))
-          (g-mode-rename-object))
-        
-        ;; Verify it was renamed
-        (should (cl-find "tor_modified" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
-        ;; Verify old one was marked Free
-        (should-not (cl-find "tor" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
-        ;; We should have exactly 1 more object overall (the appended one, as the old became Free but is still in objects list)
-        (should (= (length g-mode--objects) (1+ orig-objects)))
-        ;; Verify binary buffer is modified
-        (should (buffer-modified-p (get-buffer "moss.g")))))))
+  (with-g-mode-test-setup "references/geometry/moss.g"
+    (let ((orig-objects (length g-mode--objects)))
+      ;; Force simulated point to "tor" row by searching the UI list
+      (goto-char (point-min))
+      (while (and (not (eobp))
+                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
+        (forward-line 1))
+      (should-not (eobp))
+      ;; execute rename append (longer)
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "tor_modified")))
+        (g-mode-rename-object))
+      ;; Verify it was renamed
+      (should (cl-find "tor_modified" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+      ;; Verify old one was marked Free
+      (should-not (cl-find "tor" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+      ;; We should have exactly 1 more object overall (the appended one, as the old became Free but is still in objects list)
+      (should (= (length g-mode--objects) (1+ orig-objects)))
+      ;; Verify binary buffer is modified
+      (with-current-buffer g-mode--binary-buffer
+        (should (buffer-modified-p))))))
 
 (ert-deftest g-mode-garbage-collect-test ()
   "Test fault-resilient garbage collection compaction."
-  (with-temp-buffer
-    (set-buffer-multibyte nil)
-    (insert-file-contents-literally "references/geometry/moss.g")
-    (rename-buffer "moss.g")
-    (let ((original-size (buffer-size)))
-      (g-mode)
-      (with-current-buffer "*g: moss.g*"
-        ;; Delete "tor"
-        (goto-char (point-min))
-        (while (and (not (eobp))
-                    (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
-          (forward-line 1))
-        (should (not (eobp)))
-        (g-mode-delete-object)
+  (with-g-mode-test-setup "references/geometry/moss.g"
+    (let ((original-size (with-current-buffer g-mode--binary-buffer (buffer-size))))
+      ;; Delete "tor"
+      (goto-char (point-min))
+      (while (and (not (eobp))
+                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
+        (forward-line 1))
+      (should-not (eobp))
+      (g-mode-delete-object)
 
-        ;; Count objects before GC (show deleted to count all)
-        (let ((pre-gc-total (length g-mode--objects))
-              (pre-gc-active (length tabulated-list-entries)))
+      ;; Count objects before GC (show deleted to count all)
+      (let ((pre-gc-total (length g-mode--objects))
+            (pre-gc-active (length tabulated-list-entries)))
 
-          ;; Run GC (mock yes-or-no-p to auto-confirm)
-          (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
-            (g-mode-garbage-collect))
+        ;; Run GC (mock yes-or-no-p to auto-confirm)
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+          (g-mode-garbage-collect))
 
-          ;; Buffer should have shrunk
-          (should (< (with-current-buffer (get-buffer "moss.g") (buffer-size))
-                     original-size))
+        ;; Buffer should have shrunk
+        (should (< (with-current-buffer g-mode--binary-buffer (buffer-size))
+                   original-size))
 
-          ;; The deleted object should be gone from both the full scan and UI
-          (should-not (cl-find "tor" g-mode--objects
-                               :key (lambda (o) (cdr (assq 'name o)))
-                               :test 'equal))
-
-          ;; Active object count should be unchanged (minus the deleted one)
-          (should (= (length tabulated-list-entries) pre-gc-active))
-
-          ;; Total object count should have decreased (deleted object removed)
-          (should (< (length g-mode--objects) pre-gc-total))
-
-          ;; Remaining objects should still be parseable
-          (should (cl-find "_GLOBAL" g-mode--objects
-                           :key (lambda (o) (cdr (assq 'name o)))
-                           :test 'equal)))))))
+        ;; The deleted object should be gone from both the full scan and UI
+        (should-not (cl-find "tor" g-mode--objects
+                             :key (lambda (o) (cdr (assq 'name o)))
+                             :test 'equal))
+        ;; Active object count should be unchanged (minus the deleted one)
+        (should (= (length tabulated-list-entries) pre-gc-active))
+        ;; Total object count should have decreased (deleted object removed)
+        (should (< (length g-mode--objects) pre-gc-total))
+        ;; Remaining objects should still be parseable
+        (should (cl-find "_GLOBAL" g-mode--objects
+                         :key (lambda (o) (cdr (assq 'name o)))
+                         :test 'equal))))))
 
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here

@@ -556,6 +556,7 @@ Uses a fault-resilient multi-phase approach:
     (define-key map (kbd "h") 'g-mode-toggle-show-deleted)
     (define-key map (kbd "s") 'g-mode-save)
     (define-key map (kbd "C-x C-s") 'g-mode-save)
+    (define-key map (kbd "?") 'g-mode-help)
     map)
   "Keymap for `g-mode-ui-mode'.")
 
@@ -572,6 +573,7 @@ Uses a fault-resilient multi-phase approach:
                                ("Type" 25 t)
                                ("Size"  8 t)
                                ("Flags" 6 nil)])
+  (setq header-line-format " v:view  d:delete  R:rename  G:gc  h:toggle-deleted  s:save  ?:help")
   (setq buffer-read-only t))
 
 (defun g-mode-save ()
@@ -582,6 +584,11 @@ Uses a fault-resilient multi-phase approach:
     (with-current-buffer g-mode--binary-buffer
       (save-buffer))
     (message "Database saved.")))
+
+(defun g-mode-help ()
+  "Display a brief summary of g-mode keybindings."
+  (interactive)
+  (message "v/RET:view  d:delete  R:rename  G:gc  h:toggle-deleted  s:save  ?:help"))
 
 (defun g-mode ()
   "Major mode wrapper for BRL-CAD .g files.
@@ -604,7 +611,8 @@ Maintains the binary file buffer and creates a UI interface buffer."
         (g-mode--refresh-entries)
         (tabulated-list-init-header)
         (tabulated-list-print))
-      (pop-to-buffer ui-buf))))
+      (pop-to-buffer ui-buf)
+      ui-buf)))
 
 (provide 'g-mode)
 
