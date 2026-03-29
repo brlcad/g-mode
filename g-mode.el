@@ -234,7 +234,7 @@ Returns an alist of (KEY . VALUE) strings, or nil."
 (defvar-local g-mode--objects nil
   "List of parsed objects from the binary database.")
 
-(defvar-local g-mode-show-deleted nil
+(defvar-local g-mode-show-deleted t
   "If non-nil, show Free Space (deleted) and invalid objects in the list.")
 
 (defun g-mode-toggle-show-deleted ()
@@ -561,12 +561,12 @@ Uses a fault-resilient multi-phase approach:
 
 (defvar g-mode-ui-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "v") 'g-mode-view-object)
+    (define-key map (kbd "v") 'g-mode-toggle-show-deleted)
+    (define-key map (kbd "V") 'g-mode-view-object)
     (define-key map (kbd "RET") 'g-mode-view-object)
     (define-key map (kbd "d") 'g-mode-delete-object)
     (define-key map (kbd "R") 'g-mode-rename-object)
     (define-key map (kbd "G") 'g-mode-garbage-collect)
-    (define-key map (kbd "h") 'g-mode-toggle-show-deleted)
     (define-key map (kbd "s") 'g-mode-save)
     (define-key map (kbd "C-x C-s") 'g-mode-save)
     (define-key map (kbd "?") 'g-mode-help)
@@ -586,7 +586,7 @@ Uses a fault-resilient multi-phase approach:
                                ("Type" 25 t)
                                ("Size"  8 t)
                                ("Flags" 6 nil)])
-  (setq header-line-format " v:view  d:delete  R:rename  G:gc  h:toggle-deleted  s:save  ?:help")
+  (setq header-line-format " RET:view  d:delete  R:rename  G:gc  v:toggle-deleted  s:save  ?:help")
   (setq buffer-read-only t))
 
 (defun g-mode-save ()
@@ -601,7 +601,7 @@ Uses a fault-resilient multi-phase approach:
 (defun g-mode-help ()
   "Display a brief summary of g-mode keybindings."
   (interactive)
-  (message "v/RET:view  d:delete  R:rename  G:gc  h:toggle-deleted  s:save  ?:help"))
+  (message "RET/V:view  d:delete  R:rename  G:gc  v:toggle-deleted  s:save  ?:help"))
 
 (defun g-mode ()
   "Major mode wrapper for BRL-CAD .g files.

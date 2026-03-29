@@ -121,13 +121,13 @@
 (ert-deftest g-mode-ui-toggle-test ()
   "Test toggling of deleted items in UI."
   (with-g-mode-test-setup "references/geometry/moss.g"
-    ;; By default, show-deleted is nil, so DLI=2 (like the first chunk) is HIDDEN.
-    (should-not g-mode-show-deleted)
+    ;; By default, show-deleted is now t.
+    (should g-mode-show-deleted)
     (let ((initial-entries (length tabulated-list-entries)))
       (g-mode-toggle-show-deleted)
-      (should g-mode-show-deleted)
-      ;; Now it should be larger, as it includes the Free Space object!
-      (should (> (length tabulated-list-entries) initial-entries)))))
+      (should-not g-mode-show-deleted)
+      ;; Now it should be smaller, as it hides the Free Space (deleted) objects!
+      (should (< (length tabulated-list-entries) initial-entries)))))
 
 (ert-deftest g-mode-rename-inline-test ()
   "Test in-place rename logic for smaller names."
@@ -182,9 +182,12 @@
       (should-not (eobp))
       (g-mode-delete-object)
 
-      ;; Count objects before GC (show deleted to count all)
-      (let ((pre-gc-total (length g-mode--objects))
-            (pre-gc-active (length tabulated-list-entries)))
+      ;; Count objects before GC
+      (let* ((pre-gc-total (length g-mode--objects))
+             (pre-gc-active (cl-count-if (lambda (o)
+                                          (not (or (cdr (assq 'corrupt o))
+                                                   (= (logand (cdr (assq 'hflags o)) #x03) 2))))
+                                        g-mode--objects)))
 
         ;; Run GC (mock yes-or-no-p to auto-confirm)
         (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
@@ -198,9 +201,11 @@
         (should-not (cl-find "tor" g-mode--objects
                              :key (lambda (o) (cdr (assq 'name o)))
                              :test 'equal))
-        ;; Active object count should be unchanged (minus the deleted one)
+        ;; Active object count should be unchanged!
+        ;; Since show-deleted is t, tabulated-list-entries now reflects ALL objects...
+        ;; wait, after GC, there are NO deleted objects, so tabulated-list-entries should match pre-gc-active.
         (should (= (length tabulated-list-entries) pre-gc-active))
-        ;; Total object count should have decreased (deleted object removed)
+        ;; Total object count should have decreased (deleted objects removed)
         (should (< (length g-mode--objects) pre-gc-total))
         ;; Remaining objects should still be parseable
         (should (cl-find "_GLOBAL" g-mode--objects
