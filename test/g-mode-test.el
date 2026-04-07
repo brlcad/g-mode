@@ -65,6 +65,7 @@
   "Set up a g-mode test environment with FILENAME and clean up afterwards."
   (declare (indent 1) (debug t))
   `(with-temp-buffer
+     (buffer-enable-undo)
      (set-buffer-multibyte nil)
      (insert-file-contents-literally ,filename)
      (let* ((bin-buf (current-buffer))
@@ -112,11 +113,14 @@
       
       ;; 1. Execute delete
       (g-mode-delete-object)
+      ;; It moved down, so move back up
+      (forward-line -1)
       ;; In UI, it should now show as <Free Space>
       (should (equal "<Free Space>" (aref (tabulated-list-get-entry (point)) 0)))
       
       ;; 2. Execute undelete
       (g-mode-delete-object)
+      (forward-line -1)
       ;; It should be back to "tor"
       (should (equal "tor" (aref (tabulated-list-get-entry (point)) 0)))
       (should (= (length g-mode--objects) orig-len))
@@ -221,6 +225,46 @@
         (should (cl-find "_GLOBAL" g-mode--objects
                          :key (lambda (o) (cdr (assq 'name o)))
                          :test 'equal))))))
+
+(ert-deftest g-mode-mark-unmark-test ()
+  "Test marking and unmarking in UI."
+  (with-g-mode-test-setup "references/geometry/moss.g"
+    (goto-char (point-min))
+    (g-mode-mark)
+    (should (= (length g-mode--marked-objects) 1))
+    (forward-line -1)
+    (g-mode-unmark)
+    (should (= (length g-mode--marked-objects) 0))))
+
+(ert-deftest g-mode-copy-test ()
+  "Test copying an object."
+  (with-g-mode-test-setup "references/geometry/moss.g"
+    (let ((orig-objects (length g-mode--objects)))
+      (goto-char (point-min))
+      (while (and (not (eobp))
+                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
+        (forward-line 1))
+      (should-not (eobp))
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "tor_copied")))
+        (g-mode-copy-object))
+      (should (cl-find "tor_copied" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+      (should (= (length g-mode--objects) (1+ orig-objects))))))
+
+(ert-deftest g-mode-undo-test ()
+  "Test that EMACS undo reverses file mutations and refreshes UI."
+  (with-g-mode-test-setup "references/geometry/moss.g"
+    (goto-char (point-min))
+    (while (and (not (eobp))
+                (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
+      (forward-line 1))
+    (should-not (eobp))
+    (with-current-buffer g-mode--binary-buffer (undo-boundary))
+    (g-mode-delete-object)
+    (with-current-buffer g-mode--binary-buffer (undo-boundary))
+    (forward-line -1)
+    (should (equal "<Free Space>" (aref (tabulated-list-get-entry (point)) 0)))
+    (g-mode-undo)
+    (should (equal "tor" (aref (tabulated-list-get-entry (point)) 0)))))
 
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here

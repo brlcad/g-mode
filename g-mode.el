@@ -246,6 +246,12 @@ Returns an alist of (KEY . VALUE) strings, or nil."
 (defvar-local g-mode--objects nil
   "List of parsed objects from the binary database.")
 
+(defvar-local g-mode--marked-objects nil
+  "List of object positions (IDs) currently marked with `*`.")
+
+(defvar-local g-mode--session-deleted-objects nil
+  "List of object positions explicitly soft-deleted during this session.")
+
 (defvar-local g-mode-show-deleted t
   "If non-nil, show Free Space (deleted) and invalid objects in the list.")
 
@@ -253,9 +259,21 @@ Returns an alist of (KEY . VALUE) strings, or nil."
   "Toggle visibility of deleted/Free Space objects in the database."
   (interactive)
   (setq g-mode-show-deleted (not g-mode-show-deleted))
+  (g-mode--update-ui)
+  (message "Deleted objects are now %s." (if g-mode-show-deleted "visible" "hidden")))
+
+(defun g-mode--update-ui ()
+  "Refresh entries, print the UI, and restore visual marks."
   (g-mode--refresh-entries)
   (tabulated-list-print t)
-  (message "Deleted objects are now %s." (if g-mode-show-deleted "visible" "hidden")))
+  (save-excursion
+    (goto-char (point-min))
+    (let ((inhibit-read-only t))
+      (while (not (eobp))
+        (let ((id (tabulated-list-get-id)))
+          (when (member id g-mode--marked-objects)
+            (tabulated-list-put-tag "*")))
+        (forward-line 1)))))
 
 (defun g-mode--refresh-entries ()
   "Populate `tabulated-list-entries' from the binary buffer."
@@ -360,13 +378,15 @@ metadata like name-presence and width codes are preserved."
        ((= dli 2)
         ;; Undelete: set DLI back to 0 (Application Data)
         (g-mode--set-dli-at pos bin-buf 0)
+        (setq g-mode--session-deleted-objects (delete pos g-mode--session-deleted-objects))
         (message "Undeleted object '%s'." (or (cdr (assq 'name obj)) "unnamed")))
        (t
         ;; Delete: set DLI to 2 (Free Store)
         (g-mode--set-dli-at pos bin-buf 2)
+        (cl-pushnew pos g-mode--session-deleted-objects)
         (message "Marked object '%s' as Free Space." (or (cdr (assq 'name obj)) "unnamed"))))
-      (g-mode--refresh-entries)
-      (tabulated-list-print t))))
+      (g-mode--update-ui)
+      (forward-line 1))))
 
 (defun g-mode--interior-size (obj bin-buf)
   "Calculate exact byte size of Interior Data for OBJ.
@@ -416,100 +436,274 @@ maximum possible interior span to guard against corrupt length fields."
         ((<= val #xFFFFFFFF) '(2 . 4))
         (t '(3 . 8))))
 
-(defun g-mode-rename-object ()
-  "Rename the current object. If shorter or same length, rename in-place.
-If longer, append a new copy and mark the old one as Free Space."
+(defun g-mode--get-targets ()
+  "Return list of marked object IDs in order, or just the ID at point if none."
+  (or (and g-mode--marked-objects (reverse g-mode--marked-objects))
+      (let ((id (tabulated-list-get-id)))
+        (if id (list id) nil))))
+
+(defun g-mode-mark ()
+  "Mark the object at point for bulk operations."
   (interactive)
-  (let* ((pos (tabulated-list-get-id))
-         (obj (cl-find pos g-mode--objects :key (lambda (o) (cdr (assq 'pos o)))))
-         (bin-buf g-mode--binary-buffer))
-    (unless obj (user-error "No object selected"))
-    (let* ((old-name (cdr (assq 'name obj)))
-           (hflags (cdr (assq 'hflags obj))))
-      (unless old-name (user-error "Cannot rename an unnamed or Free Space object"))
-      (let ((new-name (read-string (format "Rename '%s' to: " old-name) old-name)))
-        (when (string= old-name new-name)
-          (user-error "Name unchanged"))
-        
-        (let* ((old-nlen (1+ (length old-name)))
-               (new-nlen (1+ (length new-name)))
-               (name-pos (- (cdr (assq 'interior-pos obj)) old-nlen)))
-          (if (<= new-nlen old-nlen)
-              ;; Inline overwrite: update Name_Length, write shorter name,
-              ;; shift interior data forward to close the gap, and pad.
-              ;; Object_Length is unchanged so no other objects move.
-              (with-current-buffer bin-buf
-                (save-excursion
-                  (let* ((inhibit-read-only t)
-                         (nwid (ash (logand hflags #x18) -3))
-                         (nlen-bytes (g-mode--decode-width nwid))
-                         (nlen-field-pos (- name-pos nlen-bytes))
-                         (obj-end (+ (cdr (assq 'pos obj)) (cdr (assq 'length obj))))
-                         (magic2-pos (1- obj-end))
-                         (int-size (g-mode--interior-size obj bin-buf))
-                         (interior-data (buffer-substring-no-properties
-                                         (cdr (assq 'interior-pos obj))
-                                         (+ (cdr (assq 'interior-pos obj)) int-size)))
-                         (new-name-data (concat new-name (make-string 1 0)))
-                         (available (- magic2-pos name-pos))
-                         (padding-size (- available new-nlen int-size))
-                         (replacement (concat new-name-data interior-data
-                                             (make-string padding-size 0))))
-                    ;; Update Name_Length field (same width, no position shift)
-                    (goto-char nlen-field-pos)
-                    (delete-char nlen-bytes)
-                    (insert (g-mode--uint-to-bytes new-nlen nlen-bytes))
-                    ;; Replace name + interior + padding region in one shot
-                    (delete-region name-pos magic2-pos)
-                    (goto-char name-pos)
-                    (insert replacement))))
-            ;; Append & Free
-            (let* ((n-res (g-mode--calc-width-prefix new-nlen))
-                   (new-nwid (car n-res))
-                   (new-nlen-bytes (cdr n-res))
-                   (nlen-str (g-mode--uint-to-bytes new-nlen new-nlen-bytes))
-                   (name-str (concat new-name (make-string 1 0)))
-                   (int-size (g-mode--interior-size obj bin-buf))
-                   (int-str (with-current-buffer bin-buf 
-                              (buffer-substring-no-properties 
-                               (cdr (assq 'interior-pos obj))
-                               (+ (cdr (assq 'interior-pos obj)) int-size))))
-                   (base-size (+ 6 new-nlen-bytes new-nlen int-size 1))
-                   (new-owid 0) (new-olen-bytes 1) (pad-bytes 0) (olen-chunks 0) (done nil))
-              
-              (while (not done)
-                (let* ((raw-size (+ base-size new-olen-bytes))
-                       (rem (% raw-size 8))
-                       (local-pad (if (= rem 0) 0 (- 8 rem)))
-                       (total-bytes (+ raw-size local-pad))
-                       (chunks (/ total-bytes 8))
-                       (req-owid (car (g-mode--calc-width-prefix chunks))))
-                  (if (<= req-owid new-owid)
-                      (setq pad-bytes local-pad olen-chunks chunks done t)
-                    (setq new-owid req-owid new-olen-bytes (cdr (g-mode--calc-width-prefix chunks))))))
-              
-              (let* ((olen-str (g-mode--uint-to-bytes olen-chunks new-olen-bytes))
-                     (hflags-no-wids (logand hflags #x07))
-                     (new-hflags (char-to-string (logior hflags-no-wids #x20 (ash new-owid 6) (ash new-nwid 3))))
-                     (header-str (concat (char-to-string g-mode-magic1) new-hflags
-                                         (char-to-string (cdr (assq 'aflags obj)))
-                                         (char-to-string (cdr (assq 'bflags obj)))
-                                         (char-to-string (cdr (assq 'major-type obj)))
-                                         (char-to-string (cdr (assq 'minor-type obj)))))
-                     (pad-str (make-string pad-bytes 0))
-                     (magic2-str (char-to-string g-mode-magic2))
-                     (full-str (concat header-str olen-str nlen-str name-str int-str pad-str magic2-str)))
+  (let ((id (tabulated-list-get-id)))
+    (when id
+      (cl-pushnew id g-mode--marked-objects)
+      (tabulated-list-put-tag "*")
+      (forward-line 1))))
+
+(defun g-mode-unmark ()
+  "Unmark the object at point. If soft-deleted in this session, undeletes it."
+  (interactive)
+  (let ((id (tabulated-list-get-id)))
+    (when id
+      (setq g-mode--marked-objects (delete id g-mode--marked-objects))
+      (tabulated-list-put-tag " ")
+      ;; Check undelete
+      (when (member id g-mode--session-deleted-objects)
+        (let* ((objects (with-current-buffer g-mode--binary-buffer (g-mode--scan-buffer)))
+               (obj (cl-find id objects :key (lambda (o) (cdr (assq 'pos o))))))
+          (when (and obj (= (logand (cdr (assq 'hflags obj)) #x03) 2))
+             (g-mode--set-dli-at id g-mode--binary-buffer 0)
+             (setq g-mode--session-deleted-objects (delete id g-mode--session-deleted-objects))
+             (message "Undeleted object '%s'." (or (cdr (assq 'name obj)) "unnamed"))
+             (g-mode--update-ui)
+             (forward-line -1))))
+      (forward-line 1))))
+
+(defun g-mode-unmark-backward ()
+  "Move up one line and unmark/undelete."
+  (interactive)
+  (forward-line -1)
+  (g-mode-unmark))
+
+(defun g-mode-unmark-all-marks ()
+  "Clear all marks. Undeletes any objects soft-deleted in this session."
+  (interactive)
+  (setq g-mode--marked-objects nil)
+  (let ((undeleted 0))
+    (dolist (id g-mode--session-deleted-objects)
+      (let* ((objects (with-current-buffer g-mode--binary-buffer (g-mode--scan-buffer)))
+             (obj (cl-find id objects :key (lambda (o) (cdr (assq 'pos o))))))
+        (when (and obj (= (logand (cdr (assq 'hflags obj)) #x03) 2))
+          (g-mode--set-dli-at id g-mode--binary-buffer 0)
+          (cl-incf undeleted))))
+    (setq g-mode--session-deleted-objects nil)
+    (g-mode--update-ui)
+    (message "Cleared all marks%s" 
+             (if (> undeleted 0) (format " and undeleted %d objects." undeleted) "."))))
+
+(defun g-mode-toggle-marks ()
+  "Toggle the `*` mark on all visible objects."
+  (interactive)
+  (let ((new-marks nil))
+    (save-excursion
+      (goto-char (point-min))
+      (while (not (eobp))
+        (let ((id (tabulated-list-get-id)))
+          (when (and id (not (member id g-mode--marked-objects)))
+            (cl-pushnew id new-marks)))
+        (forward-line 1)))
+    (setq g-mode--marked-objects (nreverse new-marks))
+    (g-mode--update-ui)))
+
+(defun g-mode-mark-regexp (regexp)
+  "Mark all objects whose name matches REGEXP."
+  (interactive "sMark (regexp): ")
+  (let ((marked 0)
+        (objects (with-current-buffer g-mode--binary-buffer (g-mode--scan-buffer))))
+    (save-excursion
+      (goto-char (point-min))
+      (while (not (eobp))
+        (let ((id (tabulated-list-get-id)))
+          (when id
+            (let* ((obj (cl-find id objects :key (lambda (o) (cdr (assq 'pos o)))))
+                   (name (cdr (assq 'name obj))))
+               (when (and name (string-match regexp name)
+                          (not (member id g-mode--marked-objects)))
+                 (cl-pushnew id g-mode--marked-objects)
+                 (cl-incf marked)))))
+        (forward-line 1)))
+    (g-mode--update-ui)
+    (message "Marked %d objects." marked)))
+
+(defun g-mode-view-object-other-window ()
+  "View object in other window."
+  (interactive)
+  (let ((pop-up-windows t))
+    (g-mode-view-object)))
+
+(defun g-mode-revert ()
+  "Revert the binary buffer, discarding changes, and refresh UI."
+  (interactive)
+  (with-current-buffer g-mode--binary-buffer
+    (revert-buffer t t))
+  (setq g-mode--marked-objects nil)
+  (setq g-mode--session-deleted-objects nil)
+  (g-mode--update-ui)
+  (message "Reverted database from disk."))
+
+(defun g-mode-undo ()
+  "Undo the last mutation in the binary buffer and refresh."
+  (interactive)
+  (with-current-buffer g-mode--binary-buffer
+    (undo))
+  (g-mode--update-ui)
+  (message "Undo successful."))
+
+(defun g-mode-rename-object ()
+  "Rename marked objects (or the object at point). If shorter or same length,
+rename in-place. If longer, append a new copy and mark old as Free Space."
+  (interactive)
+  (let ((targets (g-mode--get-targets))
+        (bin-buf g-mode--binary-buffer))
+    (unless targets (user-error "No objects selected"))
+    (dolist (pos targets)
+      (let* ((objects (with-current-buffer bin-buf (g-mode--scan-buffer)))
+             (obj (cl-find pos objects :key (lambda (o) (cdr (assq 'pos o))))))
+        (when obj
+          (let* ((old-name (cdr (assq 'name obj)))
+                 (hflags (cdr (assq 'hflags obj))))
+            (unless old-name (user-error "Cannot rename an unnamed or Free Space object"))
+            (let ((new-name (read-string (format "Rename '%s' to: " old-name) old-name)))
+              (unless (string= old-name new-name)
                 
-                (with-current-buffer bin-buf
-                  (save-excursion
-                    (goto-char (point-max))
-                    (let ((inhibit-read-only t))
-                      (insert full-str))))
+                (let* ((old-nlen (1+ (length old-name)))
+                       (new-nlen (1+ (length new-name)))
+                       (name-pos (- (cdr (assq 'interior-pos obj)) old-nlen)))
+                  (if (<= new-nlen old-nlen)
+                      (with-current-buffer bin-buf
+                        (save-excursion
+                          (let* ((inhibit-read-only t)
+                                 (nwid (ash (logand hflags #x18) -3))
+                                 (nlen-bytes (g-mode--decode-width nwid))
+                                 (nlen-field-pos (- name-pos nlen-bytes))
+                                 (obj-end (+ (cdr (assq 'pos obj)) (cdr (assq 'length obj))))
+                                 (magic2-pos (1- obj-end))
+                                 (int-size (g-mode--interior-size obj bin-buf))
+                                 (interior-data (buffer-substring-no-properties
+                                                 (cdr (assq 'interior-pos obj))
+                                                 (+ (cdr (assq 'interior-pos obj)) int-size)))
+                                 (new-name-data (concat new-name (make-string 1 0)))
+                                 (available (- magic2-pos name-pos))
+                                 (padding-size (- available new-nlen int-size))
+                                 (replacement (concat new-name-data interior-data
+                                                     (make-string padding-size 0))))
+                            (goto-char nlen-field-pos)
+                            (delete-char nlen-bytes)
+                            (insert (g-mode--uint-to-bytes new-nlen nlen-bytes))
+                            (delete-region name-pos magic2-pos)
+                            (goto-char name-pos)
+                            (insert replacement))))
+                    (let* ((n-res (g-mode--calc-width-prefix new-nlen))
+                           (new-nwid (car n-res))
+                           (new-nlen-bytes (cdr n-res))
+                           (nlen-str (g-mode--uint-to-bytes new-nlen new-nlen-bytes))
+                           (name-str (concat new-name (make-string 1 0)))
+                           (int-size (g-mode--interior-size obj bin-buf))
+                           (int-str (with-current-buffer bin-buf 
+                                      (buffer-substring-no-properties 
+                                       (cdr (assq 'interior-pos obj))
+                                       (+ (cdr (assq 'interior-pos obj)) int-size))))
+                           (base-size (+ 6 new-nlen-bytes new-nlen int-size 1))
+                           (new-owid 0) (new-olen-bytes 1) (pad-bytes 0) (olen-chunks 0) (done nil))
+                      
+                      (while (not done)
+                        (let* ((raw-size (+ base-size new-olen-bytes))
+                               (rem (% raw-size 8))
+                               (local-pad (if (= rem 0) 0 (- 8 rem)))
+                               (total-bytes (+ raw-size local-pad))
+                               (chunks (/ total-bytes 8))
+                               (req-owid (car (g-mode--calc-width-prefix chunks))))
+                          (if (<= req-owid new-owid)
+                              (setq pad-bytes local-pad olen-chunks chunks done t)
+                            (setq new-owid req-owid new-olen-bytes (cdr (g-mode--calc-width-prefix chunks))))))
+                      
+                      (let* ((olen-str (g-mode--uint-to-bytes olen-chunks new-olen-bytes))
+                             (hflags-no-wids (logand hflags #x07))
+                             (new-hflags (char-to-string (logior hflags-no-wids #x20 (ash new-owid 6) (ash new-nwid 3))))
+                             (header-str (concat (char-to-string g-mode-magic1) new-hflags
+                                                 (char-to-string (cdr (assq 'aflags obj)))
+                                                 (char-to-string (cdr (assq 'bflags obj)))
+                                                 (char-to-string (cdr (assq 'major-type obj)))
+                                                 (char-to-string (cdr (assq 'minor-type obj)))))
+                             (pad-str (make-string pad-bytes 0))
+                             (magic2-str (char-to-string g-mode-magic2))
+                             (full-str (concat header-str olen-str nlen-str name-str int-str pad-str magic2-str)))
+                        
+                        (with-current-buffer bin-buf
+                          (save-excursion
+                            (goto-char (point-max))
+                            (let ((inhibit-read-only t))
+                              (insert full-str))))
+                        
+                        (g-mode--set-dli-at (cdr (assq 'pos obj)) bin-buf 2)
+                        (cl-pushnew (cdr (assq 'pos obj)) g-mode--session-deleted-objects))))
+                  (message "Renamed '%s' to '%s'." old-name new-name))))))))
+    (setq g-mode--marked-objects nil)
+    (g-mode--update-ui)))
+
+(defun g-mode-copy-object ()
+  "Copy marked objects (or the object at point). Prompts for new names."
+  (interactive)
+  (let ((targets (g-mode--get-targets))
+        (bin-buf g-mode--binary-buffer))
+    (unless targets (user-error "No objects selected"))
+    (dolist (pos targets)
+      (let* ((objects (with-current-buffer bin-buf (g-mode--scan-buffer)))
+             (obj (cl-find pos objects :key (lambda (o) (cdr (assq 'pos o))))))
+        (when obj
+          (let* ((old-name (cdr (assq 'name obj)))
+                 (hflags (cdr (assq 'hflags obj))))
+            (unless old-name (user-error "Cannot copy unnamed or Free Space objects"))
+            (let ((new-name (read-string (format "Copy '%s' to: " old-name) old-name)))
+              (when (string= old-name new-name)
+                (user-error "Cannot copy to the same name"))
+              
+              (let* ((new-nlen (1+ (length new-name)))
+                     (n-res (g-mode--calc-width-prefix new-nlen))
+                     (new-nwid (car n-res))
+                     (new-nlen-bytes (cdr n-res))
+                     (nlen-str (g-mode--uint-to-bytes new-nlen new-nlen-bytes))
+                     (name-str (concat new-name (make-string 1 0)))
+                     (int-size (g-mode--interior-size obj bin-buf))
+                     (int-str (with-current-buffer bin-buf 
+                                (buffer-substring-no-properties 
+                                 (cdr (assq 'interior-pos obj))
+                                 (+ (cdr (assq 'interior-pos obj)) int-size))))
+                     (base-size (+ 6 new-nlen-bytes new-nlen int-size 1))
+                     (new-owid 0) (new-olen-bytes 1) (pad-bytes 0) (olen-chunks 0) (done nil))
                 
-                (g-mode--set-dli-at (cdr (assq 'pos obj)) bin-buf 2))))
-        (message "Renamed '%s' to '%s'." old-name new-name)
-        (g-mode--refresh-entries)
-        (tabulated-list-print t))))))
+                (while (not done)
+                  (let* ((raw-size (+ base-size new-olen-bytes))
+                         (rem (% raw-size 8))
+                         (local-pad (if (= rem 0) 0 (- 8 rem)))
+                         (total-bytes (+ raw-size local-pad))
+                         (chunks (/ total-bytes 8))
+                         (req-owid (car (g-mode--calc-width-prefix chunks))))
+                    (if (<= req-owid new-owid)
+                        (setq pad-bytes local-pad olen-chunks chunks done t)
+                      (setq new-owid req-owid new-olen-bytes (cdr (g-mode--calc-width-prefix chunks))))))
+                
+                (let* ((olen-str (g-mode--uint-to-bytes olen-chunks new-olen-bytes))
+                       (hflags-no-wids (logand hflags #x07))
+                       (new-hflags (char-to-string (logior hflags-no-wids #x20 (ash new-owid 6) (ash new-nwid 3))))
+                       (header-str (concat (char-to-string g-mode-magic1) new-hflags
+                                           (char-to-string (cdr (assq 'aflags obj)))
+                                           (char-to-string (cdr (assq 'bflags obj)))
+                                           (char-to-string (cdr (assq 'major-type obj)))
+                                           (char-to-string (cdr (assq 'minor-type obj)))))
+                       (pad-str (make-string pad-bytes 0))
+                       (magic2-str (char-to-string g-mode-magic2))
+                       (full-str (concat header-str olen-str nlen-str name-str int-str pad-str magic2-str)))
+                  
+                  (with-current-buffer bin-buf
+                    (save-excursion
+                      (goto-char (point-max))
+                      (let ((inhibit-read-only t))
+                        (insert full-str))))
+                  (message "Copied '%s' to '%s'." old-name new-name))))))))
+    (setq g-mode--marked-objects nil)
+    (g-mode--update-ui)))
 
 (defun g-mode-garbage-collect ()
   "Compact the database by reclaiming Free Space (deleted) objects.
@@ -576,11 +770,24 @@ Uses a fault-resilient multi-phase approach:
 
         (message "GC complete: reclaimed %d bytes from %d deleted objects."
                  reclaimed (length deleted))
-        (g-mode--refresh-entries)
-        (tabulated-list-print t)))))
+        (g-mode--update-ui)))))
 
 (defvar g-mode-ui-mode-map
   (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "m") 'g-mode-mark)
+    (define-key map (kbd "u") 'g-mode-unmark)
+    (define-key map (kbd "U") 'g-mode-unmark-all-marks)
+    (define-key map (kbd "DEL") 'g-mode-unmark-backward)
+    (define-key map (kbd "t") 'g-mode-toggle-marks)
+    (define-key map (kbd "% m") 'g-mode-mark-regexp)
+    (define-key map (kbd "C") 'g-mode-copy-object)
+    (define-key map (kbd "g") 'g-mode-revert)
+    (define-key map (kbd "C-_") 'g-mode-undo)
+    (define-key map (kbd "C-x u") 'g-mode-undo)
+    (define-key map (kbd "<undo>") 'g-mode-undo)
+    (define-key map (kbd "o") 'g-mode-view-object-other-window)
+    (define-key map (kbd "x") 'g-mode-garbage-collect)
+    
     (define-key map (kbd "v") 'g-mode-view-object)
     (define-key map (kbd "h") 'g-mode-toggle-show-deleted)
     (define-key map (kbd "RET") 'g-mode-view-object)
@@ -590,6 +797,7 @@ Uses a fault-resilient multi-phase approach:
     (define-key map (kbd "s") 'g-mode-save)
     (define-key map (kbd "C-x C-s") 'g-mode-save)
     (define-key map (kbd "?") 'g-mode-help)
+    (define-key map (kbd "q") 'quit-window)
     map)
   "Keymap for `g-mode-ui-mode'.")
 
@@ -603,10 +811,11 @@ Uses a fault-resilient multi-phase approach:
   "UI mode for browsing BRL-CAD database objects.
 \\{g-mode-ui-mode-map}"
   (setq tabulated-list-format [("Name" 30 t)
-                               ("Type" 25 t)
-                               ("Size"  8 t)
-                               ("Flags" 6 nil)])
-  (setq header-line-format " v:view  d:delete  R:rename  G:gc  h:toggle-deleted  s:save  ?:help")
+                                ("Type" 25 t)
+                                ("Size"  8 t)
+                                ("Flags" 6 nil)])
+  (setq tabulated-list-padding 2)
+  (setq header-line-format " m:mark u:unmk U:unmk-all d:del x:gc C:copy C-_:undo g:revert ?:help")
   (setq buffer-read-only t))
 
 (defun g-mode-save ()
@@ -619,9 +828,7 @@ Uses a fault-resilient multi-phase approach:
     (message "Database saved.")))
 
 (defun g-mode-help ()
-  "Display a brief summary of g-mode keybindings."
-  (interactive)
-  (message "v/RET:view  d:delete  R:rename  G:gc  h:toggle-deleted  s:save  ?:help"))
+  (message "v:view d:del m:mark u/U:unmk x:gc C:copy C-_:undo g:rev ?:help"))
 
 (defun g-mode ()
   "Major mode wrapper for BRL-CAD .g files.
@@ -630,7 +837,7 @@ Maintains the binary file buffer and creates a UI interface buffer."
   ;; Ensure the binary buffer is pristine and protected
   (set-buffer-multibyte nil)
   (setq buffer-read-only t)
-  (buffer-disable-undo)
+  ;; `undo` works by tracking binary mutations inside this buffer.
   
   (if (not (g-mode--parse-header))
       (error "Not a valid BRL-CAD .g geometry database (magic missing)")
@@ -641,9 +848,7 @@ Maintains the binary file buffer and creates a UI interface buffer."
       (with-current-buffer ui-buf
         (g-mode-ui-mode)
         (setq g-mode--binary-buffer bin-buf)
-        (g-mode--refresh-entries)
-        (tabulated-list-init-header)
-        (tabulated-list-print))
+        (g-mode--update-ui))
       (pop-to-buffer ui-buf)
       ui-buf)))
 
