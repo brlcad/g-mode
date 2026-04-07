@@ -18,6 +18,7 @@
 
 (require 'cl-lib)
 (require 'bindat)
+(require 'button)
 (require 'tabulated-list)
 
 (defgroup g-mode nil
@@ -48,17 +49,157 @@
     (magic2     u8))
   "Structure for the fixed 8-byte initial database header of a .g file.")
 
+(defun g-mode--make-diagnostic (level code message &rest props)
+  "Create a diagnostic alist with LEVEL, CODE, MESSAGE, and PROPS."
+  (append `((level . ,level)
+            (code . ,code)
+            (message . ,message))
+          props))
+
+(defun g-mode--diagnostics-have-errors-p (diagnostics)
+  "Return non-nil when DIAGNOSTICS contains at least one error entry."
+  (cl-some (lambda (diag) (eq (cdr (assq 'level diag)) 'error)) diagnostics))
+
+(defun g-mode--diagnostic-level-label (diag)
+  "Return a user-facing label for diagnostic DIAG."
+  (upcase (symbol-name (or (cdr (assq 'level diag)) 'info))))
+
+(defun g-mode--get-diagnostics (record)
+  "Return the diagnostics list carried by RECORD."
+  (cdr (assq 'diagnostics record)))
+
+(defun g-mode--safe-bytes (start len &optional limit)
+  "Return LEN bytes starting at START, or nil if out of bounds.
+LIMIT defaults to `point-max' and is treated as an exclusive bound."
+  (let* ((limit (or limit (point-max)))
+         (end (+ start len)))
+    (when (and (<= start limit)
+               (<= end limit))
+      (buffer-substring-no-properties start end))))
+
+(defun g-mode--read-uint-at (pos wid-bytes &optional limit)
+  "Read an unsigned integer at POS using WID-BYTES bytes.
+Return nil if the requested span falls outside LIMIT."
+  (let ((bytes (g-mode--safe-bytes pos wid-bytes limit)))
+    (when bytes
+      (g-mode--read-uint bytes))))
+
+(defun g-mode--canonical-header-bytes ()
+  "Return the canonical DB5 8-byte header as a raw string."
+  (string g-mode-magic1 1 0 0 0 0 1 g-mode-magic2))
+
+(defun g-mode--analyze-header ()
+  "Analyze the database header and return a recovery-oriented record."
+  (save-excursion
+    (let* ((pos (point-min))
+           (raw (g-mode--safe-bytes pos 8))
+           (diagnostics nil)
+           (fields nil))
+      (if (not raw)
+          `((kind . header)
+            (pos . ,pos)
+            (length . ,(- (point-max) (point-min)))
+            (valid . nil)
+            (diagnostics . ,(list (g-mode--make-diagnostic
+                                   'error 'truncated-header
+                                   "Database header is truncated."))))
+        (setq fields (bindat-unpack g-mode-db-header raw))
+        (unless (= (cdr (assq 'magic1 fields)) g-mode-magic1)
+          (push (g-mode--make-diagnostic
+                 'error 'bad-header-magic1
+                 (format "Header Magic1 is 0x%02X, expected 0x%02X."
+                         (cdr (assq 'magic1 fields)) g-mode-magic1))
+                diagnostics))
+        (unless (= (cdr (assq 'magic2 fields)) g-mode-magic2)
+          (push (g-mode--make-diagnostic
+                 'error 'bad-header-magic2
+                 (format "Header Magic2 is 0x%02X, expected 0x%02X."
+                         (cdr (assq 'magic2 fields)) g-mode-magic2))
+                diagnostics))
+        (unless (= (logand (cdr (assq 'hflags fields)) #x03) 1)
+          (push (g-mode--make-diagnostic
+                 'error 'bad-header-dli
+                 (format "Header DLI bits are 0x%X, expected 0x1."
+                         (logand (cdr (assq 'hflags fields)) #x03)))
+                diagnostics))
+        (when (not (zerop (logand (cdr (assq 'hflags fields)) #x20)))
+          (push (g-mode--make-diagnostic
+                 'error 'header-name-present
+                 "Header object should not have a name-present bit set.")
+                diagnostics))
+        (unless (zerop (logand (cdr (assq 'aflags fields)) #x20))
+          (push (g-mode--make-diagnostic
+                 'error 'header-attributes-present
+                 "Header object should not have attributes.")
+                diagnostics))
+        (unless (zerop (logand (cdr (assq 'bflags fields)) #x20))
+          (push (g-mode--make-diagnostic
+                 'error 'header-body-present
+                 "Header object should not have a body.")
+                diagnostics))
+        (unless (= (ash (logand (cdr (assq 'hflags fields)) #xC0) -6) 0)
+          (push (g-mode--make-diagnostic
+                 'error 'header-object-width
+                 "Header object length width should be 8-bit.")
+                diagnostics))
+        (unless (= (ash (logand (cdr (assq 'aflags fields)) #xC0) -6) 0)
+          (push (g-mode--make-diagnostic
+                 'error 'header-attribute-width
+                 "Header attribute length width should be 8-bit.")
+                diagnostics))
+        (unless (= (ash (logand (cdr (assq 'bflags fields)) #xC0) -6) 0)
+          (push (g-mode--make-diagnostic
+                 'error 'header-body-width
+                 "Header body length width should be 8-bit.")
+                diagnostics))
+        (unless (zerop (logand (cdr (assq 'aflags fields)) #x07))
+          (push (g-mode--make-diagnostic
+                 'error 'header-attribute-compression
+                 "Header attribute compression flags should be zero.")
+                diagnostics))
+        (unless (zerop (logand (cdr (assq 'bflags fields)) #x07))
+          (push (g-mode--make-diagnostic
+                 'error 'header-body-compression
+                 "Header body compression flags should be zero.")
+                diagnostics))
+        (unless (= (cdr (assq 'major-type fields)) 0)
+          (push (g-mode--make-diagnostic
+                 'error 'header-major-type
+                 "Header major type should be 0.")
+                diagnostics))
+        (unless (= (cdr (assq 'minor-type fields)) 0)
+          (push (g-mode--make-diagnostic
+                 'error 'header-minor-type
+                 "Header minor type should be 0.")
+                diagnostics))
+        (unless (= (cdr (assq 'length fields)) 1)
+          (push (g-mode--make-diagnostic
+                 'error 'header-length
+                 (format "Header object length field is %d, expected 1."
+                         (cdr (assq 'length fields))))
+                diagnostics))
+        (append `((kind . header)
+                  (name . "<database header>")
+                  (type-label . "Database Header")
+                  (pos . ,pos)
+                  (length . 8)
+                  (valid . ,(not (g-mode--diagnostics-have-errors-p diagnostics)))
+                  (diagnostics . ,(nreverse diagnostics)))
+                fields)))))
+
 (defun g-mode--parse-header ()
-  "Parse the 8-byte database header and return its alist structure.
-Returns nil if magic numbers do not match or buffer is too small."
-  (when (>= (- (point-max) (point-min)) 8)
-    (let* ((bytes (string-as-unibyte (buffer-substring-no-properties (point-min) (+ (point-min) 8))))
-           (header (bindat-unpack g-mode-db-header bytes)))
-      (if (and (= (cdr (assq 'magic1 header)) g-mode-magic1)
-               (= (cdr (assq 'magic2 header)) g-mode-magic2)
-               (= (cdr (assq 'hflags header)) 1)) ;; DLI=1 for Db header
-          header
-        nil))))
+  "Parse the 8-byte database header and return its header fields, or nil."
+  (let ((header (g-mode--analyze-header)))
+    (when (cdr (assq 'valid header))
+      (list (cons 'magic1 (cdr (assq 'magic1 header)))
+            (cons 'hflags (cdr (assq 'hflags header)))
+            (cons 'aflags (cdr (assq 'aflags header)))
+            (cons 'bflags (cdr (assq 'bflags header)))
+            (cons 'major-type (cdr (assq 'major-type header)))
+            (cons 'minor-type (cdr (assq 'minor-type header)))
+            (cons 'length (cdr (car (last (cl-remove-if-not (lambda (cell) (eq (car cell) 'length))
+                                                           header)))))
+            (cons 'magic2 (cdr (assq 'magic2 header)))))))
 
 (defconst g-mode-object-fixed-header
   '((magic1     u8)
@@ -80,72 +221,252 @@ Returns nil if magic numbers do not match or buffer is too small."
       (setq val (+ (ash val 8) (aref bytes i))))
     val))
 
-(defun g-mode--parse-object (start-pos)
-  "Parse an object starting at START-POS.
-Returns an alist of metadata including 'length in bytes, and 'name if present."
+(defun g-mode--analyze-object-interior (start-pos obj-end aflags bflags diagnostics)
+  "Analyze object interior data between START-POS and OBJ-END.
+Return an alist describing spans and updated DIAGNOSTICS.
+Signal failure via `throw' when a span extends past the object boundary."
   (save-excursion
     (goto-char start-pos)
-    (when (= (char-after) g-mode-magic1)
-      (let* ((hbuf (string-as-unibyte (buffer-substring-no-properties (point) (+ (point) 6))))
-             (obj (bindat-unpack g-mode-object-fixed-header hbuf))
-             (hflags (cdr (assq 'hflags obj)))
-             (owid (ash (logand hflags #xC0) -6))
-             (np (not (zerop (logand hflags #x20))))
-             (nwid (ash (logand hflags #x18) -3))
-             (olen-bytes (g-mode--decode-width owid)))
-        (forward-char 6)
-        
-        ;; Read Object_Length
-        (let* ((olen-buf (buffer-substring-no-properties (point) (+ (point) olen-bytes)))
-               (olen-chunks (g-mode--read-uint olen-buf)))
-          (forward-char olen-bytes)
-          ;; Ensure length is at least 8 bytes and a multiple of 8 to avoid infinite loops.
-          (let ((len (* olen-chunks 8)))
-            (when (<= len 0) (setq len 8))
-            (setq obj (nconc obj `((length . ,len)))))
-          
-          ;; Read Name if present
-          (when np
-            (let* ((nlen-bytes (g-mode--decode-width nwid))
-                   (nlen-buf (buffer-substring-no-properties (point) (+ (point) nlen-bytes)))
-                   (nlen (g-mode--read-uint nlen-buf)))
-              (forward-char nlen-bytes)
-              ;; Read name data.
-              (let* ((raw-name (buffer-substring-no-properties (point) (+ (point) (1- nlen))))
-                     (name-str (replace-regexp-in-string "\0+\\'" "" raw-name)))
-                (forward-char nlen)
-                (setq obj (nconc obj `((name . ,name-str)))))))
-          
-          (setq obj (nconc obj `((pos . ,start-pos) (interior-pos . ,(point)))))
-          obj)))))
+    (let* ((limit (1- obj-end))
+           (cursor start-pos)
+           (ap (not (zerop (logand aflags #x20))))
+           (awid (ash (logand aflags #xC0) -6))
+           (bp (not (zerop (logand bflags #x20))))
+           (bwid (ash (logand bflags #xC0) -6))
+           (attribute-data-pos nil)
+           (attribute-length nil)
+           (body-data-pos nil)
+           (body-length nil))
+      (when ap
+        (let* ((alen-bytes (g-mode--decode-width awid))
+               (alen (g-mode--read-uint-at cursor alen-bytes obj-end)))
+          (unless alen
+            (throw 'g-mode-invalid-object
+                   (cons (g-mode--make-diagnostic
+                          'error 'truncated-attribute-length
+                          "Attribute length field extends past the object boundary.")
+                         diagnostics)))
+          (setq cursor (+ cursor alen-bytes)
+                attribute-data-pos cursor
+                attribute-length alen)
+          (when (> (+ cursor alen) limit)
+            (throw 'g-mode-invalid-object
+                   (cons (g-mode--make-diagnostic
+                          'error 'truncated-attribute-data
+                          "Attribute payload extends past the object boundary."
+                          `(expected-length . ,alen))
+                         diagnostics)))
+          (goto-char cursor)
+          (forward-char alen)
+          (setq cursor (point))))
+      (when bp
+        (let* ((blen-bytes (g-mode--decode-width bwid))
+               (blen (g-mode--read-uint-at cursor blen-bytes obj-end)))
+          (unless blen
+            (throw 'g-mode-invalid-object
+                   (cons (g-mode--make-diagnostic
+                          'error 'truncated-body-length
+                          "Body length field extends past the object boundary.")
+                         diagnostics)))
+          (setq cursor (+ cursor blen-bytes)
+                body-data-pos cursor
+                body-length blen)
+          (when (> (+ cursor blen) limit)
+            (throw 'g-mode-invalid-object
+                   (cons (g-mode--make-diagnostic
+                          'error 'truncated-body-data
+                          "Body payload extends past the object boundary."
+                          `(expected-length . ,blen))
+                         diagnostics)))
+          (goto-char cursor)
+          (forward-char blen)
+          (setq cursor (point))))
+      `((diagnostics . ,diagnostics)
+        (attribute-data-pos . ,attribute-data-pos)
+        (attribute-length . ,attribute-length)
+        (body-data-pos . ,body-data-pos)
+        (body-length . ,body-length)
+        (interior-size . ,(- cursor start-pos))
+        (padding-size . ,(max 0 (- limit cursor)))))))
+
+(defun g-mode--analyze-object (start-pos &optional limit)
+  "Analyze the object candidate at START-POS up to LIMIT.
+Return a valid object record or an invalid candidate record with diagnostics."
+  (save-excursion
+    (let ((limit (or limit (point-max)))
+          diagnostics
+          obj
+          len
+          obj-end)
+      (cl-labels
+          ((warn (code message &rest props)
+             (push (apply #'g-mode--make-diagnostic 'warning code message props)
+                   diagnostics))
+           (fail (code message &rest props)
+             (let ((all (nreverse
+                         (cons (apply #'g-mode--make-diagnostic 'error code message props)
+                               diagnostics))))
+               (throw 'g-mode-invalid-object
+                      (append `((kind . corrupt-candidate)
+                                (valid . nil)
+                                (pos . ,start-pos)
+                                (diagnostics . ,all))
+                              (when len `((candidate-length . ,len)))
+                              (when obj-end `((candidate-end . ,obj-end)))
+                              obj)))))
+        (catch 'g-mode-invalid-object
+          (unless (= (char-after start-pos) g-mode-magic1)
+            (fail 'bad-magic1
+                  (format "Magic1 at offset %d is 0x%02X, expected 0x%02X."
+                          start-pos (or (char-after start-pos) 0) g-mode-magic1)))
+          (unless (g-mode--safe-bytes start-pos 6 limit)
+            (fail 'truncated-fixed-header
+                  "Object fixed header is truncated."))
+          (setq obj (bindat-unpack g-mode-object-fixed-header
+                                   (g-mode--safe-bytes start-pos 6 limit)))
+          (let* ((hflags (cdr (assq 'hflags obj)))
+                 (aflags (cdr (assq 'aflags obj)))
+                 (bflags (cdr (assq 'bflags obj)))
+                 (owid (ash (logand hflags #xC0) -6))
+                 (np (not (zerop (logand hflags #x20))))
+                 (nwid (ash (logand hflags #x18) -3))
+                 (olen-bytes (g-mode--decode-width owid))
+                 (olen-pos (+ start-pos 6))
+                 (olen-chunks (g-mode--read-uint-at olen-pos olen-bytes limit)))
+            (unless olen-chunks
+              (fail 'truncated-object-length
+                    "Object length field is truncated."))
+            (setq len (* olen-chunks 8))
+            (setq obj (append obj `((length . ,len))))
+            (when (< len 8)
+              (fail 'object-too-short
+                    (format "Object length %d is shorter than the 8-byte minimum." len)))
+            (setq obj-end (+ start-pos len))
+            (when (> obj-end limit)
+              (fail 'object-overruns-buffer
+                    (format "Object claims %d bytes, extending past end of buffer." len)
+                    `(expected-end . ,obj-end)
+                    `(buffer-end . ,limit)))
+            (unless (= (or (char-after (1- obj-end)) 0) g-mode-magic2)
+              (fail 'bad-magic2
+                    (format "Object footer Magic2 is 0x%02X, expected 0x%02X."
+                            (or (char-after (1- obj-end)) 0) g-mode-magic2)))
+            (goto-char (+ olen-pos olen-bytes))
+            (when (and (= (logand hflags #x03) 0) (not np))
+              (warn 'application-object-missing-name
+                    "Application-data object is missing a name field."))
+            (when np
+              (let* ((nlen-bytes (g-mode--decode-width nwid))
+                     (nlen (g-mode--read-uint-at (point) nlen-bytes obj-end)))
+                (unless nlen
+                  (fail 'truncated-name-length
+                        "Name length field is truncated."))
+                (forward-char nlen-bytes)
+                (when (< nlen 1)
+                  (warn 'empty-name
+                        "Name length is zero; treating name as empty."))
+                (when (> (+ (point) nlen) obj-end)
+                  (fail 'name-overruns-object
+                        "Name data extends past the end of the object."
+                        `(name-length . ,nlen)))
+                (let* ((name-end (max (point) (+ (point) nlen -1)))
+                       (raw-name (if (> nlen 0)
+                                     (buffer-substring-no-properties (point) name-end)
+                                   ""))
+                       (terminator (and (> nlen 0)
+                                        (char-after (1- (+ (point) nlen))))))
+                  (unless (or (null terminator) (zerop terminator))
+                    (warn 'name-not-null-terminated
+                          "Name field is not NUL-terminated."))
+                  (setq obj (append obj `((name . ,(replace-regexp-in-string "\0+\\'" "" raw-name)))))
+                  (forward-char nlen))))
+            (when (and (= (logand hflags #x03) 2) np)
+              (warn 'free-object-has-name
+                    "Free-space object retains a name field."))
+            (when (and (= (logand hflags #x03) 2)
+                       (not (zerop (logand aflags #x20))))
+              (warn 'free-object-has-attributes
+                    "Free-space object has attributes, which is non-canonical."))
+            (let* ((interior-pos (point))
+                   (interior (catch 'g-mode-invalid-object
+                               (g-mode--analyze-object-interior
+                                interior-pos obj-end aflags bflags diagnostics))))
+              (when (and (consp interior) (eq (caar interior) 'level))
+                (throw 'g-mode-invalid-object
+                       (append `((kind . corrupt-candidate)
+                                 (valid . nil)
+                                 (pos . ,start-pos)
+                                 (candidate-length . ,len)
+                                 (candidate-end . ,obj-end)
+                                 (diagnostics . ,(nreverse interior)))
+                               obj)))
+              (setq diagnostics (cdr (assq 'diagnostics interior)))
+              (append `((kind . object)
+                        (valid . t)
+                        (pos . ,start-pos)
+                        (interior-pos . ,interior-pos)
+                        (diagnostics . ,(nreverse diagnostics)))
+                      obj
+                      (cl-remove-if (lambda (cell) (eq (car cell) 'diagnostics))
+                                    interior)))))))))
+
+(defun g-mode--parse-object (start-pos)
+  "Parse an object starting at START-POS.
+Return object metadata when START-POS holds a valid object candidate."
+  (let ((analysis (g-mode--analyze-object start-pos)))
+    (when (cdr (assq 'valid analysis))
+      analysis)))
+
+(defun g-mode--find-next-object-candidate (start-pos &optional limit)
+  "Return the next plausible object start at or after START-POS.
+LIMIT defaults to `point-max'.  Plausibility requires a structurally valid
+object candidate, not just a matching magic byte."
+  (let ((limit (or limit (point-max)))
+        (pos start-pos)
+        found)
+    (while (and (not found) (< pos limit))
+      (when (= (or (char-after pos) 0) g-mode-magic1)
+        (let ((analysis (g-mode--analyze-object pos limit)))
+          (when (cdr (assq 'valid analysis))
+            (setq found pos))))
+      (setq pos (1+ pos)))
+    found))
 
 (defun g-mode--scan-buffer ()
   "Scan the entire unibyte buffer for .g objects.
 Returns a list of parsed object metadata alists.
 Corrupt or unparseable regions are recorded with a `corrupt' flag
 and skipped over by scanning for the next valid magic byte."
-  (let ((objects nil)
-        (pos (+ (point-min) 8))) ;; Skip 8-byte db header
+  (let* ((header (g-mode--analyze-header))
+         (objects nil)
+         (pos (if (cdr (assq 'valid header))
+                  (+ (point-min) 8)
+                (point-min))))
     (save-excursion
       (goto-char pos)
       (while (< (point) (point-max))
-        (let ((obj (g-mode--parse-object (point))))
-          (if obj
+        (let* ((start (point))
+               (analysis (g-mode--analyze-object start (point-max))))
+          (if (cdr (assq 'valid analysis))
               (progn
-                (push obj objects)
-                (goto-char (+ (point) (cdr (assq 'length obj)))))
+                (push analysis objects)
+                (goto-char (+ start (cdr (assq 'length analysis)))))
             ;; Corrupt region — record it and try to recover
             (let ((corrupt-start (point)))
-              (forward-char 1)
-              (while (and (< (point) (point-max))
-                          (not (and (= (char-after) g-mode-magic1)
-                                    (g-mode--parse-object (point)))))
-                (forward-char 1))
+              (goto-char (or (g-mode--find-next-object-candidate (1+ corrupt-start) (point-max))
+                             (point-max)))
               (push `((corrupt . t)
+                      (kind . corrupt)
                       (name . nil)
                       (length . ,(- (point) corrupt-start))
+                      (valid . nil)
+                      (diagnostics . ,(g-mode--get-diagnostics analysis))
                       (hflags . 0) (aflags . 0) (bflags . 0)
                       (major-type . 0) (minor-type . 0) (magic1 . 0)
+                      ,@(when (assq 'candidate-length analysis)
+                          `((candidate-length . ,(cdr (assq 'candidate-length analysis)))))
+                      ,@(when (assq 'candidate-end analysis)
+                          `((candidate-end . ,(cdr (assq 'candidate-end analysis)))))
                       (pos . ,corrupt-start)
                       (interior-pos . ,corrupt-start))
                     objects)
@@ -156,25 +477,19 @@ and skipped over by scanning for the next valid magic byte."
 (defun g-mode--parse-attributes (obj)
   "Parse attributes out of OBJ at its `interior-pos` in the current buffer.
 Returns an alist of (KEY . VALUE) strings, or nil."
-  (save-excursion
-    (goto-char (cdr (assq 'interior-pos obj)))
-    (let* ((aflags (cdr (assq 'aflags obj)))
-           (awid (ash (logand aflags #xC0) -6))
-           (ap (not (zerop (logand aflags #x20))))
-           (az (logand aflags #x07)))
-      (when ap
-        (let* ((alen-bytes (g-mode--decode-width awid))
-               (alen-buf (buffer-substring-no-properties (point) (+ (point) alen-bytes)))
-               (alen (g-mode--read-uint alen-buf)))
-          (forward-char alen-bytes)
-          (if (not (zerop az))
-              '((compressed . "true")) ;; Unimplemented for now
-            (let* ((attr-data (buffer-substring-no-properties (point) (+ (point) alen)))
-                   (parts (split-string attr-data "\0" t))
-                   (attrs nil))
-              (while (>= (length parts) 2)
-                (push (cons (pop parts) (pop parts)) attrs))
-              (nreverse attrs))))))))
+  (let* ((aflags (cdr (assq 'aflags obj)))
+         (az (logand aflags #x07))
+         (attr-pos (cdr (assq 'attribute-data-pos obj)))
+         (attr-len (cdr (assq 'attribute-length obj))))
+    (when (and attr-pos attr-len (zerop az))
+      (save-excursion
+        (goto-char attr-pos)
+        (let* ((attr-data (buffer-substring-no-properties (point) (+ (point) attr-len)))
+               (parts (split-string attr-data "\0" t))
+               (attrs nil))
+          (while (>= (length parts) 2)
+            (push (cons (pop parts) (pop parts)) attrs))
+          (nreverse attrs))))))
 
 (defconst g-mode-type-names
   '(((1 . 1) . "Torus (TOR)")
@@ -236,12 +551,15 @@ Returns an alist of (KEY . VALUE) strings, or nil."
   "Alist mapping (major . minor) type pairs to human-readable names.")
 
 (defun g-mode--get-type-name (major minor)
-  "Return human-readable name for MAJOR/MINOR type, or 'Unknown'."
+  "Return human-readable name for MAJOR/MINOR type, or \"Unknown\"."
   (or (cdr (assoc (cons major minor) g-mode-type-names))
       "Unknown"))
 
 (defvar-local g-mode--binary-buffer nil
   "Reference to the hidden unibyte buffer containing the raw .g file data.")
+
+(defvar-local g-mode--header-info nil
+  "Structured analysis of the database header for this UI buffer.")
 
 (defvar-local g-mode--objects nil
   "List of parsed objects from the binary database.")
@@ -277,11 +595,22 @@ Returns an alist of (KEY . VALUE) strings, or nil."
 
 (defun g-mode--refresh-entries ()
   "Populate `tabulated-list-entries' from the binary buffer."
-  (let ((objs (with-current-buffer g-mode--binary-buffer
-                (g-mode--scan-buffer))))
+  (let* ((header-info (with-current-buffer g-mode--binary-buffer
+                        (g-mode--analyze-header)))
+         (objs (with-current-buffer g-mode--binary-buffer
+                 (g-mode--scan-buffer))))
+    (setq g-mode--header-info header-info)
     (setq g-mode--objects objs)
     
     (let ((entries nil))
+      (when (and g-mode--header-info
+                 (not (cdr (assq 'valid g-mode--header-info))))
+        (push (list :header
+                    (vector (propertize "<invalid header>" 'face 'g-mode-corrupt-face)
+                            "Database Header"
+                            (number-to-string (cdr (assq 'length g-mode--header-info)))
+                            "HDR"))
+              entries))
       (dolist (obj objs)
         (let* ((hflags (cdr (assq 'hflags obj)))
                (dli (logand hflags #x03))
@@ -309,36 +638,324 @@ Returns an alist of (KEY . VALUE) strings, or nil."
                     entries)))))
       (setq tabulated-list-entries (nreverse entries)))))
 
+(defvar-local g-mode--inspector-source-buffer nil
+  "The `g-mode-ui-mode' buffer that owns the current inspector.")
+
+(defvar-local g-mode--inspector-record-id nil
+  "The current record ID shown in the inspector.")
+
+(define-derived-mode g-mode-inspector-mode special-mode "g-mode-Inspector"
+  "Inspector buffer for database objects and recovery actions.")
+
+(defun g-mode--lookup-record (id)
+  "Look up record ID in the current `g-mode-ui-mode' buffer."
+  (cond
+   ((eq id :header) g-mode--header-info)
+   (t (cl-find id g-mode--objects :key (lambda (o) (cdr (assq 'pos o)))))))
+
+(defun g-mode--goto-record (id)
+  "Move point to the row with ID in the current tabulated list buffer."
+  (goto-char (point-min))
+  (let ((found nil))
+    (while (and (not found) (not (eobp)))
+      (when (equal (tabulated-list-get-id) id)
+        (setq found t))
+      (unless found
+        (forward-line 1)))
+    found))
+
+(defun g-mode--with-record-at-point (ui-buf id fn)
+  "In UI-BUF, move to record ID and call FN."
+  (with-current-buffer ui-buf
+    (unless (g-mode--goto-record id)
+      (user-error "Record is no longer visible"))
+    (funcall fn)))
+
+(defun g-mode--write-bytes (pos bytes)
+  "Overwrite BYTES at POS in the current buffer."
+  (save-excursion
+    (goto-char pos)
+    (let ((inhibit-read-only t))
+      (delete-region pos (+ pos (length bytes)))
+      (insert bytes))))
+
+(defun g-mode--make-free-object-bytes (length)
+  "Return a canonical free-space object of LENGTH bytes."
+  (unless (and (>= length 8) (zerop (% length 8)))
+    (error "Free-space rewrite requires a length that is a multiple of 8"))
+  (let* ((buf (make-string length 0))
+         (chunks (/ length 8))
+         (wid (g-mode--calc-width-prefix chunks))
+         (owid (car wid))
+         (olen-bytes (cdr wid))
+         (olen-str (g-mode--uint-to-bytes chunks olen-bytes)))
+    (aset buf 0 g-mode-magic1)
+    (aset buf 1 (logior (ash owid 6) 2))
+    (dotimes (idx olen-bytes)
+      (aset buf (+ 6 idx) (aref olen-str idx)))
+    (aset buf (1- length) g-mode-magic2)
+    buf))
+
+(defun g-mode--inspector-current-record ()
+  "Return the latest record shown by the current inspector."
+  (let ((ui-buf g-mode--inspector-source-buffer)
+        (id g-mode--inspector-record-id))
+    (when (buffer-live-p ui-buf)
+      (with-current-buffer ui-buf
+      (g-mode--refresh-entries)
+        (g-mode--lookup-record id)))))
+
+(defun g-mode--inspector-refresh ()
+  "Re-render the current inspector buffer."
+  (let ((record (g-mode--inspector-current-record)))
+    (unless record
+      (user-error "Record is no longer available"))
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (g-mode--render-inspector record)
+      (goto-char (point-min)))))
+
+(defun g-mode--inspector-apply-change (fn)
+  "Run FN against the binary buffer, then refresh UI and inspector."
+  (let ((ui-buf g-mode--inspector-source-buffer))
+    (unless (buffer-live-p ui-buf)
+      (user-error "Source g-mode buffer is no longer live"))
+    (with-current-buffer ui-buf
+      (funcall fn)
+      (g-mode--update-ui))
+    (g-mode--inspector-refresh)))
+
+(defun g-mode--inspector-run-ui-command (fn)
+  "Run existing UI command FN on the inspector's current record, then refresh."
+  (g-mode--with-record-at-point
+   g-mode--inspector-source-buffer
+   g-mode--inspector-record-id
+   fn)
+  (g-mode--inspector-refresh))
+
+(defun g-mode--prompt-byte (prompt current)
+  "Prompt for a hex byte with PROMPT and CURRENT default."
+  (let* ((text (read-string prompt (format "%02X" current)))
+         (value (string-to-number text 16)))
+    (unless (and (>= value 0) (<= value #xFF))
+      (user-error "Expected a hex byte value between 00 and FF"))
+    value))
+
+(defun g-mode--edit-byte-at-offset (record offset label)
+  "Prompt to edit byte LABEL at OFFSET within RECORD."
+  (let ((pos (cdr (assq 'pos record)))
+        (bin-buf (with-current-buffer g-mode--inspector-source-buffer
+                   g-mode--binary-buffer)))
+    (g-mode--inspector-apply-change
+     (lambda ()
+       (with-current-buffer bin-buf
+         (let* ((byte-pos (+ pos offset))
+                (current (or (char-after byte-pos) 0))
+                (value (g-mode--prompt-byte
+                        (format "%s (hex): " label) current)))
+           (g-mode--write-byte byte-pos value)))))))
+
+(defun g-mode--inspector-edit-type (record)
+  "Prompt for new major/minor type bytes for RECORD."
+  (let ((pos (cdr (assq 'pos record)))
+        (bin-buf (with-current-buffer g-mode--inspector-source-buffer
+                   g-mode--binary-buffer)))
+    (g-mode--inspector-apply-change
+     (lambda ()
+       (with-current-buffer bin-buf
+         (let ((major (g-mode--prompt-byte
+                       "Major type (hex): "
+                       (or (char-after (+ pos 4)) 0)))
+               (minor (g-mode--prompt-byte
+                       "Minor type (hex): "
+                       (or (char-after (+ pos 5)) 0))))
+           (g-mode--write-byte (+ pos 4) major)
+           (g-mode--write-byte (+ pos 5) minor)))))))
+
+(defun g-mode--inspector-repair-header ()
+  "Rewrite the database header to the canonical DB5 form."
+  (let ((bin-buf (with-current-buffer g-mode--inspector-source-buffer
+                   g-mode--binary-buffer)))
+    (g-mode--inspector-apply-change
+     (lambda ()
+       (with-current-buffer bin-buf
+         (if (< (- (point-max) (point-min)) 8)
+             (user-error "Buffer is too short to hold a database header")
+           (g-mode--write-bytes (point-min) (g-mode--canonical-header-bytes))))))))
+
+(defun g-mode--inspector-repair-magic2 (record)
+  "Repair the trailing Magic2 byte described by RECORD."
+  (let ((candidate-end (cdr (assq 'candidate-end record)))
+        (bin-buf (with-current-buffer g-mode--inspector-source-buffer
+                   g-mode--binary-buffer)))
+    (unless candidate-end
+      (user-error "No candidate footer position is available for this record"))
+    (g-mode--inspector-apply-change
+     (lambda ()
+       (with-current-buffer bin-buf
+         (when (> candidate-end (point-max))
+           (user-error "Candidate footer position lies beyond the end of buffer"))
+         (g-mode--write-byte (1- candidate-end) g-mode-magic2))))))
+
+(defun g-mode--inspector-rewrite-free (record)
+  "Rewrite RECORD's span as a canonical free-space object."
+  (let* ((pos (cdr (assq 'pos record)))
+         (length (cdr (assq 'length record)))
+         (bin-buf (with-current-buffer g-mode--inspector-source-buffer
+                    g-mode--binary-buffer)))
+    (g-mode--inspector-apply-change
+     (lambda ()
+       (with-current-buffer bin-buf
+         (g-mode--write-bytes pos (g-mode--make-free-object-bytes length)))))))
+
+(defun g-mode--insert-button (label action &optional help)
+  "Insert a text button with LABEL, ACTION, and optional HELP."
+  (insert-text-button label
+                      'action (lambda (_button) (funcall action))
+                      'follow-link t
+                      'help-echo help)
+  (insert " "))
+
+(defun g-mode--insert-inspector-line (label value)
+  "Insert LABEL and VALUE on one line."
+  (insert (format "%-12s %s\n" label value)))
+
+(defun g-mode--render-diagnostics (diagnostics)
+  "Insert DIAGNOSTICS into the current inspector buffer."
+  (insert "Diagnostics\n")
+  (insert "-----------\n")
+  (if diagnostics
+      (dolist (diag diagnostics)
+        (insert (format "%s: %s\n"
+                        (g-mode--diagnostic-level-label diag)
+                        (cdr (assq 'message diag)))))
+    (insert "No diagnostics.\n"))
+  (insert "\n"))
+
+(defun g-mode--render-inspector-actions (record)
+  "Insert contextual repair/edit actions for RECORD."
+  (insert "Actions\n")
+  (insert "-------\n")
+  (cond
+   ((eq (cdr (assq 'kind record)) 'header)
+    (g-mode--insert-button
+     "[Rewrite Canonical Header]"
+     #'g-mode--inspector-repair-header
+     "Repair the header bytes to the canonical DB5 form."))
+   ((cdr (assq 'corrupt record))
+    (when (cdr (assq 'candidate-end record))
+      (g-mode--insert-button
+       "[Repair Magic2]"
+       (lambda () (g-mode--inspector-repair-magic2 record))
+       "Set the candidate footer byte to the DB5 Magic2 value."))
+    (when (and (>= (cdr (assq 'length record)) 8)
+               (zerop (% (cdr (assq 'length record)) 8)))
+      (g-mode--insert-button
+       "[Rewrite As Free Object]"
+       (lambda () (g-mode--inspector-rewrite-free record))
+       "Rewrite this span as a canonical free-space object.")))
+   (t
+   (when (cdr (assq 'name record))
+      (g-mode--insert-button
+       "[Rename]"
+       (lambda () (g-mode--inspector-run-ui-command #'g-mode-rename-object))))
+    (g-mode--insert-button
+     (if (= (logand (cdr (assq 'hflags record)) #x03) 2)
+         "[Undelete]"
+       "[Delete]")
+     (lambda () (g-mode--inspector-run-ui-command #'g-mode-delete-object)))
+    (g-mode--insert-button
+     "[Edit HFlags]"
+     (lambda () (g-mode--edit-byte-at-offset record 1 "HFlags"))
+     "Edit HFlags directly as a raw hex byte.")
+    (g-mode--insert-button
+     "[Edit AFlags]"
+     (lambda () (g-mode--edit-byte-at-offset record 2 "AFlags"))
+     "Edit AFlags directly as a raw hex byte.")
+    (g-mode--insert-button
+     "[Edit BFlags]"
+     (lambda () (g-mode--edit-byte-at-offset record 3 "BFlags"))
+     "Edit BFlags directly as a raw hex byte.")
+    (g-mode--insert-button
+     "[Edit Type]"
+     (lambda () (g-mode--inspector-edit-type record))
+     "Edit major/minor type bytes directly.")))
+  (insert "\n\n"))
+
+(defun g-mode--render-inspector (record)
+  "Render RECORD in the current inspector buffer."
+  (let* ((name (or (cdr (assq 'name record))
+                   (if (eq (cdr (assq 'kind record)) 'header)
+                       "<database header>"
+                     "<unnamed>")))
+         (major (cdr (assq 'major-type record)))
+         (minor (cdr (assq 'minor-type record))))
+    (insert (format "Record: %s\n\n" name))
+    (g-mode--insert-inspector-line "Kind" (symbol-name (or (cdr (assq 'kind record)) 'object)))
+    (g-mode--insert-inspector-line "Offset" (number-to-string (cdr (assq 'pos record))))
+    (g-mode--insert-inspector-line "Length" (number-to-string (cdr (assq 'length record))))
+    (when (assq 'candidate-length record)
+      (g-mode--insert-inspector-line "Candidate Len"
+                                     (number-to-string (cdr (assq 'candidate-length record)))))
+    (when (assq 'candidate-end record)
+      (g-mode--insert-inspector-line "Candidate End"
+                                     (number-to-string (cdr (assq 'candidate-end record)))))
+    (when (assq 'hflags record)
+      (g-mode--insert-inspector-line "HFlags" (format "%02X" (cdr (assq 'hflags record)))))
+    (when (assq 'aflags record)
+      (g-mode--insert-inspector-line "AFlags" (format "%02X" (cdr (assq 'aflags record)))))
+    (when (assq 'bflags record)
+      (g-mode--insert-inspector-line "BFlags" (format "%02X" (cdr (assq 'bflags record)))))
+    (when (and major minor)
+      (g-mode--insert-inspector-line "Type"
+                                     (format "%02X:%02X %s"
+                                             major minor
+                                             (g-mode--get-type-name major minor))))
+    (when (cdr (assq 'name record))
+      (g-mode--insert-inspector-line "Name" (cdr (assq 'name record))))
+    (when (assq 'attribute-length record)
+      (g-mode--insert-inspector-line "Attrs"
+                                     (if (cdr (assq 'attribute-length record))
+                                         (number-to-string (cdr (assq 'attribute-length record)))
+                                       "none")))
+    (when (assq 'body-length record)
+      (g-mode--insert-inspector-line "Body"
+                                     (if (cdr (assq 'body-length record))
+                                         (number-to-string (cdr (assq 'body-length record)))
+                                       "none")))
+    (insert "\n")
+    (g-mode--render-diagnostics (g-mode--get-diagnostics record))
+    (when (and (eq (cdr (assq 'kind record)) 'object)
+               (not (cdr (assq 'corrupt record))))
+      (let ((attrs (with-current-buffer
+                       (with-current-buffer g-mode--inspector-source-buffer
+                         g-mode--binary-buffer)
+                     (g-mode--parse-attributes record))))
+        (insert "Attributes\n")
+        (insert "----------\n")
+        (if attrs
+            (dolist (attr attrs)
+              (insert (format "%s: %s\n" (car attr) (cdr attr))))
+          (insert "None.\n"))
+        (insert "\n")))
+    (g-mode--render-inspector-actions record)))
+
 (defun g-mode-view-object ()
-  "Display the raw details and attributes of the object at point."
+  "Display an inspector for the record at point."
   (interactive)
-  (let* ((pos (tabulated-list-get-id))
-         (obj (cl-find pos g-mode--objects :key (lambda (o) (cdr (assq 'pos o)))))
-         (src-buf g-mode--binary-buffer))
-    (unless obj
+  (let* ((ui-buf (current-buffer))
+         (id (tabulated-list-get-id))
+         (record (g-mode--lookup-record id)))
+    (unless record
       (user-error "No object under point"))
-    (let* ((name (cdr (assq 'name obj)))
-           (buf-name (format "*g-mode: %s*" (or name "unnamed")))
-           (attrs (with-current-buffer src-buf
-                    (g-mode--parse-attributes obj))))
+    (let* ((name (or (cdr (assq 'name record))
+                     (if (eq id :header) "header" "unnamed")))
+           (buf-name (format "*g-mode: %s*" name)))
       (with-current-buffer (get-buffer-create buf-name)
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-          (insert (format "Object: %s\n" (or name "<unnamed>")))
-          (insert (format "Size:   %d bytes\n" (cdr (assq 'length obj))))
-          (insert (format "Type:   %02X:%02X\n"
-                          (cdr (assq 'major-type obj))
-                          (cdr (assq 'minor-type obj))))
-          (insert (format "HFlags: %02X\n" (cdr (assq 'hflags obj))))
-          (insert (format "AFlags: %02X\n" (cdr (assq 'aflags obj))))
-          (insert (format "BFlags: %02X\n" (cdr (assq 'bflags obj))))
-          (insert "\n-- Attributes --\n")
-          (if attrs
-              (dolist (attr attrs)
-                (insert (format "%s: %s\n" (car attr) (cdr attr))))
-            (insert "None.\n"))
-          (goto-char (point-min)))
-        (special-mode)
+        (g-mode-inspector-mode)
+        (setq g-mode--inspector-source-buffer ui-buf)
+        (setq g-mode--inspector-record-id id)
+        (g-mode--inspector-refresh)
         (display-buffer (current-buffer))))))
 
 (defun g-mode--write-byte (pos byte)
@@ -351,7 +968,7 @@ Returns an alist of (KEY . VALUE) strings, or nil."
 
 (defun g-mode--set-dli-at (pos bin-buf dli)
   "Set DLI bits for object at POS in BIN-BUF to DLI (0, 1, or 2).
-This implements a non-destructive 'soft' status change that only
+This implements a non-destructive `soft' status change that only
 modifies the DLI bits (0-1) of the hflags byte, ensuring other
 metadata like name-presence and width codes are preserved."
   (with-current-buffer bin-buf
@@ -360,7 +977,7 @@ metadata like name-presence and width codes are preserved."
       (g-mode--write-byte (+ pos 1) new-hflags))))
 
 (defun g-mode-delete-object ()
-  "Toggle the 'Deleted' (Free Space) status of the object at point."
+  "Toggle the `Deleted' (Free Space) status of the object at point."
   (interactive)
   (let* ((pos (tabulated-list-get-id))
          (obj (cl-find pos g-mode--objects :key (lambda (o) (cdr (assq 'pos o)))))
@@ -393,33 +1010,8 @@ metadata like name-presence and width codes are preserved."
 Includes Attribute_Length + Attribute_Data and Body_Length + Body_Data.
 Does not include padding or Magic2 footer.  Result is clamped to the
 maximum possible interior span to guard against corrupt length fields."
-  (with-current-buffer bin-buf
-    (save-excursion
-      (goto-char (cdr (assq 'interior-pos obj)))
-      (let* ((aflags (cdr (assq 'aflags obj)))
-             (ap (not (zerop (logand aflags #x20))))
-             (awid (ash (logand aflags #xC0) -6))
-             (bflags (cdr (assq 'bflags obj)))
-             (bp (not (zerop (logand bflags #x20))))
-             (bwid (ash (logand bflags #xC0) -6))
-             (obj-end (+ (cdr (assq 'pos obj)) (cdr (assq 'length obj))))
-             (max-interior (max 0 (- obj-end (point) 1))) ;; up to magic2
-             (total 0))
-        (when ap
-          (let* ((alen-bytes (g-mode--decode-width awid))
-                 (alen (g-mode--read-uint (buffer-substring-no-properties (point) (+ (point) alen-bytes)))))
-            (if (> (+ total alen-bytes alen) max-interior)
-                (setq total max-interior)
-              (forward-char (+ alen-bytes alen))
-              (cl-incf total (+ alen-bytes alen)))))
-        (when (and bp (<= total max-interior))
-          (let* ((blen-bytes (g-mode--decode-width bwid))
-                 (blen (g-mode--read-uint (buffer-substring-no-properties (point) (+ (point) blen-bytes)))))
-            (if (> (+ total blen-bytes blen) max-interior)
-                (setq total max-interior)
-              (forward-char (+ blen-bytes blen))
-              (cl-incf total (+ blen-bytes blen)))))
-        (min total max-interior)))))
+  (ignore bin-buf)
+  (or (cdr (assq 'interior-size obj)) 0))
 
 (defun g-mode--uint-to-bytes (val wid-bytes)
   "Convert integer VAL to a big-endian raw string of WID-BYTES."
@@ -440,13 +1032,13 @@ maximum possible interior span to guard against corrupt length fields."
   "Return list of marked object IDs in order, or just the ID at point if none."
   (or (and g-mode--marked-objects (reverse g-mode--marked-objects))
       (let ((id (tabulated-list-get-id)))
-        (if id (list id) nil))))
+        (if (integerp id) (list id) nil))))
 
 (defun g-mode-mark ()
   "Mark the object at point for bulk operations."
   (interactive)
   (let ((id (tabulated-list-get-id)))
-    (when id
+    (when (integerp id)
       (cl-pushnew id g-mode--marked-objects)
       (tabulated-list-put-tag "*")
       (forward-line 1))))
@@ -455,7 +1047,7 @@ maximum possible interior span to guard against corrupt length fields."
   "Unmark the object at point. If soft-deleted in this session, undeletes it."
   (interactive)
   (let ((id (tabulated-list-get-id)))
-    (when id
+    (when (integerp id)
       (setq g-mode--marked-objects (delete id g-mode--marked-objects))
       (tabulated-list-put-tag " ")
       ;; Check undelete
@@ -500,7 +1092,7 @@ maximum possible interior span to guard against corrupt length fields."
       (goto-char (point-min))
       (while (not (eobp))
         (let ((id (tabulated-list-get-id)))
-          (when (and id (not (member id g-mode--marked-objects)))
+          (when (and (integerp id) (not (member id g-mode--marked-objects)))
             (cl-pushnew id new-marks)))
         (forward-line 1)))
     (setq g-mode--marked-objects (nreverse new-marks))
@@ -515,7 +1107,7 @@ maximum possible interior span to guard against corrupt length fields."
       (goto-char (point-min))
       (while (not (eobp))
         (let ((id (tabulated-list-get-id)))
-          (when id
+          (when (integerp id)
             (let* ((obj (cl-find id objects :key (lambda (o) (cdr (assq 'pos o)))))
                    (name (cdr (assq 'name obj))))
                (when (and name (string-match regexp name)
@@ -838,19 +1430,18 @@ Maintains the binary file buffer and creates a UI interface buffer."
   (set-buffer-multibyte nil)
   (setq buffer-read-only t)
   ;; `undo` works by tracking binary mutations inside this buffer.
-  
-  (if (not (g-mode--parse-header))
-      (error "Not a valid BRL-CAD .g geometry database (magic missing)")
-    ;; Create or get UI buffer
-    (let* ((bin-buf (current-buffer))
-           (ui-name (format "*g: %s*" (buffer-name)))
-           (ui-buf (get-buffer-create (generate-new-buffer-name ui-name))))
-      (with-current-buffer ui-buf
-        (g-mode-ui-mode)
-        (setq g-mode--binary-buffer bin-buf)
-        (g-mode--update-ui))
-      (pop-to-buffer ui-buf)
-      ui-buf)))
+  (when (= (buffer-size) 0)
+    (error "Buffer is empty; there is no database content to inspect"))
+  ;; Create or get UI buffer
+  (let* ((bin-buf (current-buffer))
+         (ui-name (format "*g: %s*" (buffer-name)))
+         (ui-buf (get-buffer-create (generate-new-buffer-name ui-name))))
+    (with-current-buffer ui-buf
+      (g-mode-ui-mode)
+      (setq g-mode--binary-buffer bin-buf)
+      (g-mode--update-ui))
+    (pop-to-buffer ui-buf)
+    ui-buf))
 
 (provide 'g-mode)
 

@@ -266,5 +266,68 @@
     (g-mode-undo)
     (should (equal "tor" (aref (tabulated-list-get-entry (point)) 0)))))
 
+(ert-deftest g-mode-invalid-header-open-test ()
+  "Invalid headers should still open in recovery mode."
+  (with-temp-buffer
+    (buffer-enable-undo)
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally "references/geometry/moss.g")
+    (g-mode--write-byte (point-min) 0)
+    (let* ((bin-buf (current-buffer))
+           (ui-buf (g-mode)))
+      (unwind-protect
+          (with-current-buffer ui-buf
+            (should-not (cdr (assq 'valid g-mode--header-info)))
+            (should (g-mode--lookup-record :header))
+            (should (> (length g-mode--objects) 0)))
+        (when (buffer-live-p ui-buf) (kill-buffer ui-buf))
+        (with-current-buffer bin-buf (setq buffer-read-only nil))))))
+
+(ert-deftest g-mode-corrupt-object-diagnostics-test ()
+  "Malformed objects should surface structured diagnostics."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally "references/geometry/moss.g")
+    (let* ((obj (g-mode--parse-object 105))
+           (magic2-pos (1- (+ 105 (cdr (assq 'length obj))))))
+      (should obj)
+      (g-mode--write-byte magic2-pos 0)
+      (let* ((objects (g-mode--scan-buffer))
+             (corrupt (cl-find-if (lambda (o) (cdr (assq 'corrupt o))) objects))
+             (diag (car (g-mode--get-diagnostics corrupt))))
+        (should corrupt)
+        (should (eq (cdr (assq 'code diag)) 'bad-magic2))
+        (should (assq 'candidate-end corrupt))))))
+
+(ert-deftest g-mode-inspector-repair-header-test ()
+  "The inspector should offer and apply header repair in place."
+  (with-temp-buffer
+    (buffer-enable-undo)
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally "references/geometry/moss.g")
+    (g-mode--write-byte (point-min) 0)
+    (let* ((bin-buf (current-buffer))
+           (ui-buf (g-mode))
+           inspector-buf)
+      (unwind-protect
+          (progn
+            (with-current-buffer ui-buf
+              (goto-char (point-min))
+              (should (equal :header (tabulated-list-get-id)))
+              (g-mode-view-object))
+            (setq inspector-buf (get-buffer "*g-mode: <database header>*"))
+            (should inspector-buf)
+            (with-current-buffer inspector-buf
+              (should (string-match-p "Rewrite Canonical Header" (buffer-string)))
+              (g-mode--inspector-repair-header))
+            (with-current-buffer bin-buf
+              (should (g-mode--parse-header)))
+            (with-current-buffer ui-buf
+              (should (cdr (assq 'valid g-mode--header-info)))
+              (should-not (cl-find :header tabulated-list-entries :key #'car :test #'equal))))
+        (when (buffer-live-p inspector-buf) (kill-buffer inspector-buf))
+        (when (buffer-live-p ui-buf) (kill-buffer ui-buf))
+        (with-current-buffer bin-buf (setq buffer-read-only nil))))))
+
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here

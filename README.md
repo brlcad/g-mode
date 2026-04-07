@@ -8,9 +8,10 @@ binary database files natively — no BRL-CAD installation required.
 `g-mode` implements its own binary parser in pure Emacs Lisp using
 `bindat`, providing a `tabulated-list-mode` UI for navigating `.g`
 geometry databases.  Opening a `.g` file presents a searchable,
-sortable table of all database objects.  From there you can inspect
-object properties, rename objects, delete objects, and compact the file
-to reclaim space.
+sortable table of database records.  From there you can inspect object
+properties, rename objects, delete objects, compact the file to reclaim
+space, and recover from malformed headers or corrupt object spans
+without leaving Emacs.
 
 ## Requirements
 
@@ -75,11 +76,25 @@ directly into the binary buffer; the UI refreshes from it.
 
 ### Object Inspector (`v`)
 
-Displays in a split buffer:
+Displays in a split buffer and now doubles as the repair surface:
 
 - Object name, size, type codes
 - HFlags, AFlags, BFlags
 - Parsed key=value attributes
+- Structured diagnostics for malformed headers/objects
+- Contextual repair/edit buttons for header fixes, raw flag/type edits,
+  soft-delete/undelete, Magic2 repair, and rewriting corrupt spans as
+  Free Space
+
+### Recovery-Oriented Open
+
+- Invalid or non-canonical database headers no longer block the mode
+  from opening a file
+- The object list surfaces an `<invalid header>` row when needed
+- Scanner recovery attempts to resynchronize on structurally valid
+  object candidates rather than any lone `Magic1` byte
+- Corrupt spans retain diagnostic details so they can be inspected and
+  repaired from the object view
 
 ### Deletion (`d`)
 
