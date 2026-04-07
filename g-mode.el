@@ -24,6 +24,16 @@
   "Major mode for reading and editing BRL-CAD .g geometry database files."
   :group 'data)
 
+(defface g-mode-deleted-face
+  '((t :inherit shadow :strike-through t))
+  "Face for deleted (Free Space) objects in the tabulated list."
+  :group 'g-mode)
+
+(defface g-mode-corrupt-face
+  '((t :inherit error :weight bold))
+  "Face for corrupt or unparseable regions in the tabulated list."
+  :group 'g-mode)
+
 (defconst g-mode-magic1 #x76 "First magic number byte for a database object.")
 (defconst g-mode-magic2 #x35 "Last magic number byte for a database object.")
 
@@ -89,7 +99,10 @@ Returns an alist of metadata including 'length in bytes, and 'name if present."
         (let* ((olen-buf (buffer-substring-no-properties (point) (+ (point) olen-bytes)))
                (olen-chunks (g-mode--read-uint olen-buf)))
           (forward-char olen-bytes)
-          (setq obj (nconc obj `((length . ,(* olen-chunks 8)))))
+          ;; Ensure length is at least 8 bytes and a multiple of 8 to avoid infinite loops.
+          (let ((len (* olen-chunks 8)))
+            (when (<= len 0) (setq len 8))
+            (setq obj (nconc obj `((length . ,len)))))
           
           ;; Read Name if present
           (when np
@@ -97,8 +110,7 @@ Returns an alist of metadata including 'length in bytes, and 'name if present."
                    (nlen-buf (buffer-substring-no-properties (point) (+ (point) nlen-bytes)))
                    (nlen (g-mode--read-uint nlen-buf)))
               (forward-char nlen-bytes)
-              ;; Read name data. It includes a null byte, so we use (1- nlen).
-              ;; Strip any trailing NUL padding for inline-renamed shorter names.
+              ;; Read name data.
               (let* ((raw-name (buffer-substring-no-properties (point) (+ (point) (1- nlen))))
                      (name-str (replace-regexp-in-string "\0+\\'" "" raw-name)))
                 (forward-char nlen)
@@ -264,11 +276,15 @@ Returns an alist of (KEY . VALUE) strings, or nil."
                    (len (cdr (assq 'length obj)))
                    (type-name (g-mode--get-type-name major minor))
                    (type-str (format "%s (%d,%d)" type-name major minor))
+                   (face (cond (is-corrupt 'g-mode-corrupt-face)
+                               (is-deleted 'g-mode-deleted-face)
+                               (t nil)))
                    (display-name (cond (is-corrupt "<corrupt>")
                                        (is-deleted "<Free Space>")
                                        (t (or name "<unnamed>")))))
-              (push (list obj
-                          (vector display-name
+              ;; The ID is the object's position in the binary buffer.
+              (push (list (cdr (assq 'pos obj))
+                          (vector (if face (propertize display-name 'face face) display-name)
                                   type-str
                                   (number-to-string len)
                                   (format "%02X" hflags)))
@@ -276,10 +292,11 @@ Returns an alist of (KEY . VALUE) strings, or nil."
       (setq tabulated-list-entries (nreverse entries)))))
 
 (defun g-mode-view-object ()
-  "Open a detailed view of the object at point."
+  "Display the raw details and attributes of the object at point."
   (interactive)
-  (let ((obj (tabulated-list-get-id))
-        (src-buf g-mode--binary-buffer))
+  (let* ((pos (tabulated-list-get-id))
+         (obj (cl-find pos g-mode--objects :key (lambda (o) (cdr (assq 'pos o)))))
+         (src-buf g-mode--binary-buffer))
     (unless obj
       (user-error "No object under point"))
     (let* ((name (cdr (assq 'name obj)))
@@ -314,39 +331,40 @@ Returns an alist of (KEY . VALUE) strings, or nil."
       (delete-char 1)
       (insert byte))))
 
-(defun g-mode--free-object-at (pos bin-buf)
-  "Mark object at POS as Free Storage natively in BIN-BUF.
-This implements a 'soft delete' that only modifies the object header
-flags to set DLI=2 (Free Space). It does NOT zero out the interior
-data or fill it with a null body as the full specification suggests,
-which allows for easier data recovery if an object was deleted
-accidentally."
+(defun g-mode--set-dli-at (pos bin-buf dli)
+  "Set DLI bits for object at POS in BIN-BUF to DLI (0, 1, or 2).
+This implements a non-destructive 'soft' status change that only
+modifies the DLI bits (0-1) of the hflags byte, ensuring other
+metadata like name-presence and width codes are preserved."
   (with-current-buffer bin-buf
     (let* ((hflags (char-after (+ pos 1)))
-           (owid (ash (logand hflags #xC0) -6))
-           (new-hflags (logior (ash owid 6) #x02))
-           (new-aflags #x00)
-           (new-bflags #x20))
-      (g-mode--write-byte (+ pos 1) new-hflags)
-      (g-mode--write-byte (+ pos 2) new-aflags)
-      (g-mode--write-byte (+ pos 3) new-bflags))))
+           (new-hflags (logior (logand hflags #xFC) (logand dli #x03))))
+      (g-mode--write-byte (+ pos 1) new-hflags))))
 
 (defun g-mode-delete-object ()
-  "Mark the object at point as Free Storage (DLI=2) natively in the .g file."
+  "Toggle the 'Deleted' (Free Space) status of the object at point."
   (interactive)
-  (let ((obj (tabulated-list-get-id))
-        (bin-buf g-mode--binary-buffer))
+  (let* ((pos (tabulated-list-get-id))
+         (obj (cl-find pos g-mode--objects :key (lambda (o) (cdr (assq 'pos o)))))
+         (bin-buf g-mode--binary-buffer))
     (unless obj
       (user-error "No object under point"))
-    ;; Read hflags live from the binary buffer, not the stale alist
-    (let ((live-hflags (with-current-buffer bin-buf
-                         (char-after (+ (cdr (assq 'pos obj)) 1)))))
-      (when (= (logand live-hflags #x03) #x02)
-        (user-error "Object is already marked as Free Space"))
-      
-      (g-mode--free-object-at (cdr (assq 'pos obj)) bin-buf)
-      
-      (message "Marked object '%s' as Free Space." (or (cdr (assq 'name obj)) "unnamed"))
+    ;; Read hflags live from the binary buffer
+    (let* ((pos (cdr (assq 'pos obj)))
+           (live-hflags (with-current-buffer bin-buf
+                          (char-after (+ pos 1))))
+           (dli (logand live-hflags #x03)))
+      (cond
+       ((= dli 1)
+        (user-error "Cannot delete/undelete the database header object"))
+       ((= dli 2)
+        ;; Undelete: set DLI back to 0 (Application Data)
+        (g-mode--set-dli-at pos bin-buf 0)
+        (message "Undeleted object '%s'." (or (cdr (assq 'name obj)) "unnamed")))
+       (t
+        ;; Delete: set DLI to 2 (Free Store)
+        (g-mode--set-dli-at pos bin-buf 2)
+        (message "Marked object '%s' as Free Space." (or (cdr (assq 'name obj)) "unnamed"))))
       (g-mode--refresh-entries)
       (tabulated-list-print t))))
 
@@ -399,11 +417,13 @@ maximum possible interior span to guard against corrupt length fields."
         (t '(3 . 8))))
 
 (defun g-mode-rename-object ()
-  "Rename the object at point. Modifies the buffer natively."
+  "Rename the current object. If shorter or same length, rename in-place.
+If longer, append a new copy and mark the old one as Free Space."
   (interactive)
-  (let ((obj (tabulated-list-get-id))
-        (bin-buf g-mode--binary-buffer))
-    (unless obj (user-error "No object under point"))
+  (let* ((pos (tabulated-list-get-id))
+         (obj (cl-find pos g-mode--objects :key (lambda (o) (cdr (assq 'pos o)))))
+         (bin-buf g-mode--binary-buffer))
+    (unless obj (user-error "No object selected"))
     (let* ((old-name (cdr (assq 'name obj)))
            (hflags (cdr (assq 'hflags obj))))
       (unless old-name (user-error "Cannot rename an unnamed or Free Space object"))
@@ -486,7 +506,7 @@ maximum possible interior span to guard against corrupt length fields."
                     (let ((inhibit-read-only t))
                       (insert full-str))))
                 
-                (g-mode--free-object-at (cdr (assq 'pos obj)) bin-buf))))
+                (g-mode--set-dli-at (cdr (assq 'pos obj)) bin-buf 2))))
         (message "Renamed '%s' to '%s'." old-name new-name)
         (g-mode--refresh-entries)
         (tabulated-list-print t))))))
@@ -561,8 +581,8 @@ Uses a fault-resilient multi-phase approach:
 
 (defvar g-mode-ui-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "v") 'g-mode-toggle-show-deleted)
-    (define-key map (kbd "V") 'g-mode-view-object)
+    (define-key map (kbd "v") 'g-mode-view-object)
+    (define-key map (kbd "h") 'g-mode-toggle-show-deleted)
     (define-key map (kbd "RET") 'g-mode-view-object)
     (define-key map (kbd "d") 'g-mode-delete-object)
     (define-key map (kbd "R") 'g-mode-rename-object)
@@ -586,7 +606,7 @@ Uses a fault-resilient multi-phase approach:
                                ("Type" 25 t)
                                ("Size"  8 t)
                                ("Flags" 6 nil)])
-  (setq header-line-format " RET:view  d:delete  R:rename  G:gc  v:toggle-deleted  s:save  ?:help")
+  (setq header-line-format " v:view  d:delete  R:rename  G:gc  h:toggle-deleted  s:save  ?:help")
   (setq buffer-read-only t))
 
 (defun g-mode-save ()
@@ -601,7 +621,7 @@ Uses a fault-resilient multi-phase approach:
 (defun g-mode-help ()
   "Display a brief summary of g-mode keybindings."
   (interactive)
-  (message "RET/V:view  d:delete  R:rename  G:gc  v:toggle-deleted  s:save  ?:help"))
+  (message "v/RET:view  d:delete  R:rename  G:gc  h:toggle-deleted  s:save  ?:help"))
 
 (defun g-mode ()
   "Major mode wrapper for BRL-CAD .g files.

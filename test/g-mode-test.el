@@ -99,21 +99,28 @@
         ;; typically there is a 'title' or 'units' attribute
         (should (assoc "title" attrs))))))
 
-(ert-deftest g-mode-delete-object-test ()
-  "Test marking an object as Free Space."
+(ert-deftest g-mode-delete-undelete-test ()
+  "Test marking an object as Free Space and then undeleting it."
   (with-g-mode-test-setup "references/geometry/moss.g"
     (let ((orig-len (length g-mode--objects)))
-      ;; Force simulated point to "tor" row by searching the UI list
+      ;; Find "tor"
       (goto-char (point-min))
       (while (and (not (eobp))
                   (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
         (forward-line 1))
       (should-not (eobp))
-      ;; execute delete
+      
+      ;; 1. Execute delete
       (g-mode-delete-object)
-      ;; Now 'tor' should be gone (its name is lost because NP=0)
-      (should-not (cl-find "tor" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+      ;; In UI, it should now show as <Free Space>
+      (should (equal "<Free Space>" (aref (tabulated-list-get-entry (point)) 0)))
+      
+      ;; 2. Execute undelete
+      (g-mode-delete-object)
+      ;; It should be back to "tor"
+      (should (equal "tor" (aref (tabulated-list-get-entry (point)) 0)))
       (should (= (length g-mode--objects) orig-len))
+      
       ;; Verify binary buffer is modified
       (with-current-buffer g-mode--binary-buffer
         (should (buffer-modified-p))))))
@@ -124,6 +131,7 @@
     ;; By default, show-deleted is now t.
     (should g-mode-show-deleted)
     (let ((initial-entries (length tabulated-list-entries)))
+      ;; Toggle visibility (was bound to 'v', now 'h')
       (g-mode-toggle-show-deleted)
       (should-not g-mode-show-deleted)
       ;; Now it should be smaller, as it hides the Free Space (deleted) objects!
@@ -160,11 +168,13 @@
       ;; execute rename append (longer)
       (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "tor_modified")))
         (g-mode-rename-object))
-      ;; Verify it was renamed
+      ;; Verify it was renamed (new object added)
       (should (cl-find "tor_modified" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
-      ;; Verify old one was marked Free
-      (should-not (cl-find "tor" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
-      ;; We should have exactly 1 more object overall (the appended one, as the old became Free but is still in objects list)
+      ;; Verify old one was marked Free (DLI=2) but is still in objects list (soft-delete)
+      (let ((old-tor (cl-find "tor" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal)))
+        (should old-tor)
+        (should (= (logand (cdr (assq 'hflags old-tor)) #x03) 2)))
+      ;; We should have exactly 1 more object overall
       (should (= (length g-mode--objects) (1+ orig-objects)))
       ;; Verify binary buffer is modified
       (with-current-buffer g-mode--binary-buffer
