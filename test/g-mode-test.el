@@ -107,7 +107,7 @@
       ;; Find "tor"
       (goto-char (point-min))
       (while (and (not (eobp))
-                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
+                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 1))))
         (forward-line 1))
       (should-not (eobp))
       
@@ -116,13 +116,13 @@
       ;; It moved down, so move back up
       (forward-line -1)
       ;; In UI, it should now show as <Free Space>
-      (should (equal "<Free Space>" (aref (tabulated-list-get-entry (point)) 0)))
+      (should (equal "<Free Space>" (aref (tabulated-list-get-entry (point)) 1)))
       
       ;; 2. Execute undelete
       (g-mode-delete-object)
       (forward-line -1)
       ;; It should be back to "tor"
-      (should (equal "tor" (aref (tabulated-list-get-entry (point)) 0)))
+      (should (equal "tor" (aref (tabulated-list-get-entry (point)) 1)))
       (should (= (length g-mode--objects) orig-len))
       
       ;; Verify binary buffer is modified
@@ -147,7 +147,7 @@
     ;; Force simulated point to "tor" row by searching the UI list
     (goto-char (point-min))
     (while (and (not (eobp))
-                (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
+                (not (equal "tor" (aref (tabulated-list-get-entry (point)) 1))))
       (forward-line 1))
     (should-not (eobp))
     ;; execute rename inline (shorter)
@@ -166,7 +166,7 @@
       ;; Force simulated point to "tor" row by searching the UI list
       (goto-char (point-min))
       (while (and (not (eobp))
-                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
+                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 1))))
         (forward-line 1))
       (should-not (eobp))
       ;; execute rename append (longer)
@@ -191,7 +191,7 @@
       ;; Delete "tor"
       (goto-char (point-min))
       (while (and (not (eobp))
-                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
+                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 1))))
         (forward-line 1))
       (should-not (eobp))
       (g-mode-delete-object)
@@ -217,8 +217,8 @@
                              :test 'equal))
         ;; Active object count should be unchanged!
         ;; Since show-deleted is t, tabulated-list-entries now reflects ALL objects...
-        ;; wait, after GC, there are NO deleted objects, so tabulated-list-entries should match pre-gc-active.
-        (should (= (length tabulated-list-entries) pre-gc-active))
+        ;; Wait, after GC, there are NO deleted objects, so tabulated-list-entries should match pre-gc-active + 1 for header.
+        (should (= (length tabulated-list-entries) (1+ pre-gc-active)))
         ;; Total object count should have decreased (deleted objects removed)
         (should (< (length g-mode--objects) pre-gc-total))
         ;; Remaining objects should still be parseable
@@ -230,6 +230,7 @@
   "Test marking and unmarking in UI."
   (with-g-mode-test-setup "references/geometry/moss.g"
     (goto-char (point-min))
+    (forward-line 1)
     (g-mode-mark)
     (should (= (length g-mode--marked-objects) 1))
     (forward-line -1)
@@ -242,7 +243,7 @@
     (let ((orig-objects (length g-mode--objects)))
       (goto-char (point-min))
       (while (and (not (eobp))
-                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
+                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 1))))
         (forward-line 1))
       (should-not (eobp))
       (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "tor_copied")))
@@ -250,21 +251,86 @@
       (should (cl-find "tor_copied" g-mode--objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
       (should (= (length g-mode--objects) (1+ orig-objects))))))
 
+(ert-deftest g-mode-move-up-down-test ()
+  "Test moving objects up and down."
+  (with-g-mode-test-setup "references/geometry/moss.g"
+    (let* ((nameA (cdr (assq 'name (nth 0 g-mode--objects))))
+           (nameB (cdr (assq 'name (nth 1 g-mode--objects))))
+           (nameC (cdr (assq 'name (nth 2 g-mode--objects))))
+           (nameD (cdr (assq 'name (nth 3 g-mode--objects))))
+           (nameE (cdr (assq 'name (nth 4 g-mode--objects)))))
+      
+      (g-mode--goto-record (cdr (assq 'pos (nth 0 g-mode--objects))))
+      
+      ;; 1. Move A UP -> Should be blocked because it's at index 0
+      (g-mode-move-up)
+      (should (equal (cdr (assq 'name (nth 0 g-mode--objects))) nameA))
+      
+      ;; 2. Move A DOWN by 1
+      (g-mode-move-down)
+      (should (equal (cdr (assq 'name (nth 0 g-mode--objects))) nameB))
+      (should (equal (cdr (assq 'name (nth 1 g-mode--objects))) nameA))
+      
+      ;; 3. Move A DOWN by 3 more
+      (g-mode-unmark-all-marks)
+      (g-mode--goto-record (cdr (assq 'pos (nth 1 g-mode--objects)))) ;; A is at 1
+      (g-mode-mark)
+      (g-mode-move-down)
+      (g-mode-move-down)
+      (g-mode-move-down)
+      (should (equal (cdr (assq 'name (nth 4 g-mode--objects))) nameA))
+      
+      ;; Now order is B, C, D, E, A
+      ;; 4. Move E UP by 1 (E is at index 3)
+      (g-mode-unmark-all-marks)
+      (should (equal (cdr (assq 'name (nth 3 g-mode--objects))) nameE))
+      (g-mode--goto-record (cdr (assq 'pos (nth 3 g-mode--objects))))
+      (g-mode-mark)
+      (g-mode-move-up)
+      (should (equal (cdr (assq 'name (nth 2 g-mode--objects))) nameE))
+      
+      ;; Now order is B, C, E, D, A
+      ;; 5. Test multi-object mark move
+      (g-mode-unmark-all-marks)
+      (g-mode--goto-record (cdr (assq 'pos (nth 0 g-mode--objects)))) ;; B
+      (g-mode-mark)
+      (g-mode--goto-record (cdr (assq 'pos (nth 1 g-mode--objects)))) ;; C
+      (g-mode-mark)
+      
+      ;; Move them DOWN
+      (g-mode-move-down)
+      
+      ;; Order becomes E, B, C, D, A
+      (should (equal (cdr (assq 'name (nth 0 g-mode--objects))) nameE))
+      (should (equal (cdr (assq 'name (nth 1 g-mode--objects))) nameB))
+      (should (equal (cdr (assq 'name (nth 2 g-mode--objects))) nameC))
+      
+      ;; Move out of bounds test
+      (g-mode-unmark-all-marks)
+      (let* ((last-idx (1- (length g-mode--objects)))
+             (last-name (cdr (assq 'name (nth last-idx g-mode--objects)))))
+        (g-mode--goto-record (cdr (assq 'pos (nth last-idx g-mode--objects))))
+        (g-mode-move-down) ;; should do nothing
+        (should (equal (cdr (assq 'name (nth (1- (length g-mode--objects)) g-mode--objects))) last-name)))
+      
+      (with-current-buffer g-mode--binary-buffer
+        (should (buffer-modified-p))))))
+
 (ert-deftest g-mode-undo-test ()
   "Test that EMACS undo reverses file mutations and refreshes UI."
   (with-g-mode-test-setup "references/geometry/moss.g"
     (goto-char (point-min))
     (while (and (not (eobp))
-                (not (equal "tor" (aref (tabulated-list-get-entry (point)) 0))))
+                (not (equal "tor" (aref (tabulated-list-get-entry (point)) 1))))
       (forward-line 1))
     (should-not (eobp))
     (with-current-buffer g-mode--binary-buffer (undo-boundary))
     (g-mode-delete-object)
     (with-current-buffer g-mode--binary-buffer (undo-boundary))
     (forward-line -1)
-    (should (equal "<Free Space>" (aref (tabulated-list-get-entry (point)) 0)))
+    (should (equal "<Free Space>" (aref (tabulated-list-get-entry (point)) 1)))
     (g-mode-undo)
-    (should (equal "tor" (aref (tabulated-list-get-entry (point)) 0)))))
+    (should (equal "tor" (aref (tabulated-list-get-entry (point)) 1)))))
 
 (ert-deftest g-mode-invalid-header-open-test ()
   "Invalid headers should still open in recovery mode."
@@ -324,7 +390,9 @@
               (should (g-mode--parse-header)))
             (with-current-buffer ui-buf
               (should (cdr (assq 'valid g-mode--header-info)))
-              (should-not (cl-find :header tabulated-list-entries :key #'car :test #'equal))))
+              (let ((header-entry (cl-find :header tabulated-list-entries :key #'car :test #'equal)))
+                (should header-entry)
+                (should (equal "<database header>" (aref (cadr header-entry) 1))))))
         (when (buffer-live-p inspector-buf) (kill-buffer inspector-buf))
         (when (buffer-live-p ui-buf) (kill-buffer ui-buf))
         (with-current-buffer bin-buf (setq buffer-read-only nil))))))

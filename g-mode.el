@@ -602,15 +602,19 @@ Returns an alist of (KEY . VALUE) strings, or nil."
     (setq g-mode--header-info header-info)
     (setq g-mode--objects objs)
     
-    (let ((entries nil))
-      (when (and g-mode--header-info
-                 (not (cdr (assq 'valid g-mode--header-info))))
-        (push (list :header
-                    (vector (propertize "<invalid header>" 'face 'g-mode-corrupt-face)
-                            "Database Header"
-                            (number-to-string (cdr (assq 'length g-mode--header-info)))
-                            "HDR"))
-              entries))
+    (let ((entries nil)
+          (idx 1))
+      (when g-mode--header-info
+        (let* ((valid (cdr (assq 'valid g-mode--header-info)))
+               (face (if valid nil 'g-mode-corrupt-face))
+               (name (if valid "<database header>" "<invalid header>")))
+          (push (list :header
+                      (vector "0"
+                              (if face (propertize name 'face face) name)
+                              "Database Header"
+                              (number-to-string (cdr (assq 'length g-mode--header-info)))
+                              "HDR"))
+                entries)))
       (dolist (obj objs)
         (let* ((hflags (cdr (assq 'hflags obj)))
                (dli (logand hflags #x03))
@@ -631,11 +635,13 @@ Returns an alist of (KEY . VALUE) strings, or nil."
                                        (t (or name "<unnamed>")))))
               ;; The ID is the object's position in the binary buffer.
               (push (list (cdr (assq 'pos obj))
-                          (vector (if face (propertize display-name 'face face) display-name)
+                          (vector (number-to-string idx)
+                                  (if face (propertize display-name 'face face) display-name)
                                   type-str
                                   (number-to-string len)
                                   (format "%02X" hflags)))
-                    entries)))))
+                    entries)))
+          (cl-incf idx)))
       (setq tabulated-list-entries (nreverse entries)))))
 
 (defvar-local g-mode--inspector-source-buffer nil
@@ -1364,6 +1370,86 @@ Uses a fault-resilient multi-phase approach:
                  reclaimed (length deleted))
         (g-mode--update-ui)))))
 
+(defun g-mode--swap-adjacent (idx)
+  "Swap object at IDX with object at IDX+1 in the binary buffer and memory."
+  (let* ((obj-a (nth idx g-mode--objects))
+         (obj-b (nth (1+ idx) g-mode--objects))
+         (pos-a (cdr (assq 'pos obj-a)))
+         (len-a (cdr (assq 'length obj-a)))
+         (pos-b (cdr (assq 'pos obj-b)))
+         (len-b (cdr (assq 'length obj-b)))
+         (bin-buf g-mode--binary-buffer))
+    (with-current-buffer bin-buf
+      (let ((inhibit-read-only t))
+        (let ((data-a (buffer-substring-no-properties pos-a (+ pos-a len-a))))
+          (delete-region pos-a (+ pos-a len-a))
+          (goto-char (+ pos-a len-b))
+          (insert data-a))))
+    
+    (let* ((new-pos-b pos-a)
+           (new-pos-a (+ pos-a len-b))
+           (a-marked (member pos-a g-mode--marked-objects))
+           (b-marked (member pos-b g-mode--marked-objects))
+           (a-deleted (member pos-a g-mode--session-deleted-objects))
+           (b-deleted (member pos-b g-mode--session-deleted-objects)))
+      (setq g-mode--marked-objects (delete pos-a (delete pos-b g-mode--marked-objects)))
+      (setq g-mode--session-deleted-objects (delete pos-a (delete pos-b g-mode--session-deleted-objects)))
+      (when a-marked (push new-pos-a g-mode--marked-objects))
+      (when b-marked (push new-pos-b g-mode--marked-objects))
+      (when a-deleted (push new-pos-a g-mode--session-deleted-objects))
+      (when b-deleted (push new-pos-b g-mode--session-deleted-objects))
+      
+      (setcdr (assq 'pos obj-a) new-pos-a)
+      (setcdr (assq 'interior-pos obj-a) (+ new-pos-a (- (cdr (assq 'interior-pos obj-a)) pos-a)))
+      (setcdr (assq 'pos obj-b) new-pos-b)
+      (setcdr (assq 'interior-pos obj-b) (+ new-pos-b (- (cdr (assq 'interior-pos obj-b)) pos-b)))
+      
+      (when (cdr (assq 'attribute-data-pos obj-a))
+        (setcdr (assq 'attribute-data-pos obj-a) (+ new-pos-a (- (cdr (assq 'attribute-data-pos obj-a)) pos-a))))
+      (when (cdr (assq 'body-data-pos obj-a))
+        (setcdr (assq 'body-data-pos obj-a) (+ new-pos-a (- (cdr (assq 'body-data-pos obj-a)) pos-a))))
+      (when (cdr (assq 'attribute-data-pos obj-b))
+        (setcdr (assq 'attribute-data-pos obj-b) (+ new-pos-b (- (cdr (assq 'attribute-data-pos obj-b)) pos-b))))
+      (when (cdr (assq 'body-data-pos obj-b))
+        (setcdr (assq 'body-data-pos obj-b) (+ new-pos-b (- (cdr (assq 'body-data-pos obj-b)) pos-b))))
+      
+      (let ((cell-a (nthcdr idx g-mode--objects)))
+        (setcar cell-a obj-b)
+        (setcar (cdr cell-a) obj-a)))))
+
+(defun g-mode-move-up ()
+  "Move selected objects UP one logical position."
+  (interactive)
+  (let ((targets (g-mode--get-targets)))
+    (unless targets (user-error "No objects selected"))
+    (let* ((marked-objs (cl-remove-if-not (lambda (o) (member (cdr (assq 'pos o)) targets)) g-mode--objects)))
+      (with-current-buffer g-mode--binary-buffer (undo-boundary))
+      (dolist (obj marked-objs)
+        (let ((idx (cl-position obj g-mode--objects)))
+          (when (and idx (> idx 0))
+            (let ((prev-obj (nth (1- idx) g-mode--objects)))
+              (unless (memq prev-obj marked-objs)
+                (g-mode--swap-adjacent (1- idx)))))))
+      (with-current-buffer g-mode--binary-buffer (undo-boundary))
+      (g-mode--update-ui))))
+
+(defun g-mode-move-down ()
+  "Move selected objects DOWN one logical position."
+  (interactive)
+  (let ((targets (g-mode--get-targets)))
+    (unless targets (user-error "No objects selected"))
+    (let* ((target-objs (cl-remove-if-not (lambda (o) (member (cdr (assq 'pos o)) targets)) g-mode--objects))
+           (marked-objs (reverse target-objs)))
+      (with-current-buffer g-mode--binary-buffer (undo-boundary))
+      (dolist (obj marked-objs)
+        (let ((idx (cl-position obj g-mode--objects)))
+          (when (and idx (< idx (1- (length g-mode--objects))))
+            (let ((next-obj (nth (1+ idx) g-mode--objects)))
+              (unless (memq next-obj marked-objs)
+                (g-mode--swap-adjacent idx))))))
+      (with-current-buffer g-mode--binary-buffer (undo-boundary))
+      (g-mode--update-ui))))
+
 (defvar g-mode-ui-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "m") 'g-mode-mark)
@@ -1388,6 +1474,10 @@ Uses a fault-resilient multi-phase approach:
     (define-key map (kbd "G") 'g-mode-garbage-collect)
     (define-key map (kbd "s") 'g-mode-save)
     (define-key map (kbd "C-x C-s") 'g-mode-save)
+    (define-key map (kbd "<M-up>") 'g-mode-move-up)
+    (define-key map (kbd "M-<up>") 'g-mode-move-up)
+    (define-key map (kbd "<M-down>") 'g-mode-move-down)
+    (define-key map (kbd "M-<down>") 'g-mode-move-down)
     (define-key map (kbd "?") 'g-mode-help)
     (define-key map (kbd "q") 'quit-window)
     map)
@@ -1402,12 +1492,13 @@ Uses a fault-resilient multi-phase approach:
 (define-derived-mode g-mode-ui-mode tabulated-list-mode "g-mode-UI"
   "UI mode for browsing BRL-CAD database objects.
 \\{g-mode-ui-mode-map}"
-  (setq tabulated-list-format [("Name" 30 t)
-                                ("Type" 25 t)
-                                ("Size"  8 t)
-                                ("Flags" 6 nil)])
+  (setq tabulated-list-format [("#" 4 t)
+                               ("Name" 30 t)
+                               ("Type" 25 t)
+                               ("Size"  8 t)
+                               ("Flags" 6 nil)])
   (setq tabulated-list-padding 2)
-  (setq header-line-format " m:mark u:unmk U:unmk-all d:del x:gc C:copy C-_:undo g:revert ?:help")
+  (setq header-line-format " m:mark u:unmk U:unmk-all d:del x:gc C:copy C-_:undo g:revert ?:help M-up:move-up M-dn:move-dn")
   (setq buffer-read-only t))
 
 (defun g-mode-save ()
