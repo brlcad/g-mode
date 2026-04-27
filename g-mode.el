@@ -606,6 +606,8 @@ Returns an alist of (KEY . VALUE) strings, or nil."
                                         '("Flags" 6 nil)))
     (tabulated-list-init-header))
   (tabulated-list-print t)
+  (when (buffer-live-p g-mode--binary-buffer)
+    (set-buffer-modified-p (buffer-modified-p g-mode--binary-buffer)))
   (save-excursion
     (goto-char (point-min))
     (let ((inhibit-read-only t))
@@ -677,7 +679,7 @@ Returns an alist of (KEY . VALUE) strings, or nil."
 (defvar-local g-mode--inspector-record-id nil
   "The current record ID shown in the inspector.")
 
-(define-derived-mode g-mode-inspector-mode special-mode "g-mode-Inspector"
+(define-derived-mode g-mode-inspector-mode special-mode "BRL-CAD Object"
   "Inspector buffer for database objects and recovery actions.")
 
 (defun g-mode--lookup-record (id)
@@ -1160,12 +1162,23 @@ maximum possible interior span to guard against corrupt length fields."
 (defun g-mode-revert ()
   "Revert the binary buffer, discarding changes, and refresh UI."
   (interactive)
-  (with-current-buffer g-mode--binary-buffer
-    (revert-buffer t t))
-  (setq g-mode--marked-objects nil)
-  (setq g-mode--session-deleted-objects nil)
-  (g-mode--update-ui)
-  (message "Reverted database from disk."))
+  (let ((file buffer-file-name))
+    (unless file
+      (user-error "Buffer is not visiting a file"))
+    (when (or (not (buffer-modified-p))
+              (y-or-n-p (format "Discard changes to %s? " (file-name-nondirectory file))))
+      (with-current-buffer g-mode--binary-buffer
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert-file-contents file)
+          (set-buffer-modified-p nil)
+          (buffer-disable-undo)
+          (buffer-enable-undo)))
+      (setq g-mode--marked-objects nil)
+      (setq g-mode--session-deleted-objects nil)
+      (set-buffer-modified-p nil)
+      (g-mode--update-ui)
+      (message "Reverted database from disk."))))
 
 (defun g-mode-undo ()
   "Undo the last mutation in the binary buffer and refresh."
@@ -1499,8 +1512,8 @@ Uses a fault-resilient multi-phase approach:
     (define-key map (kbd "d") 'g-mode-delete-object)
     (define-key map (kbd "R") 'g-mode-rename-object)
     (define-key map (kbd "G") 'g-mode-garbage-collect)
-    (define-key map (kbd "s") 'g-mode-save)
-    (define-key map (kbd "C-x C-s") 'g-mode-save)
+    (define-key map (kbd "s") 'save-buffer)
+    (define-key map (kbd "C-x C-s") 'save-buffer)
     (define-key map (kbd "<M-up>") 'g-mode-move-up)
     (define-key map (kbd "M-<up>") 'g-mode-move-up)
     (define-key map (kbd "<M-down>") 'g-mode-move-down)
@@ -1516,7 +1529,7 @@ Uses a fault-resilient multi-phase approach:
 ;;;###autoload
 (add-to-list 'file-coding-system-alist '("\\.g\\'" . no-conversion))
 
-(define-derived-mode g-mode-ui-mode tabulated-list-mode "g-mode-UI"
+(define-derived-mode g-mode-ui-mode tabulated-list-mode "BRL-CAD"
   "UI mode for browsing BRL-CAD database objects.
 \\{g-mode-ui-mode-map}"
   (setq tabulated-list-format [("#" 4 t)
@@ -1530,38 +1543,45 @@ Uses a fault-resilient multi-phase approach:
   (setq header-line-format " m:mark u:unmk U:unmk-all d:del x:gc C:copy C-_:undo g:revert ?:help M-up:move-up M-dn:move-dn")
   (setq buffer-read-only t))
 
-(defun g-mode-save ()
-  "Save the changes in the hidden binary buffer to its file."
-  (interactive)
-  (if (not (buffer-live-p g-mode--binary-buffer))
-      (error "Binary buffer is no longer live")
-    (with-current-buffer g-mode--binary-buffer
-      (save-buffer))
-    (message "Database saved.")))
+(defun g-mode--write-contents ()
+  "Save the changes in the hidden binary buffer to the visited file."
+  (let ((file buffer-file-name))
+    (if (not (buffer-live-p g-mode--binary-buffer))
+        (error "Binary buffer is no longer live")
+      (with-current-buffer g-mode--binary-buffer
+        (write-region (point-min) (point-max) file nil t))))
+  (set-buffer-modified-p nil)
+  (message "Database saved.")
+  t)
 
 (defun g-mode-help ()
   (message "v:view d:del m:mark u/U:unmk x:gc C:copy C-_:undo g:rev ?:help"))
 
 (defun g-mode ()
   "Major mode wrapper for BRL-CAD .g files.
-Maintains the binary file buffer and creates a UI interface buffer."
+Maintains a hidden binary buffer and uses the current buffer as the UI."
   (interactive)
-  ;; Ensure the binary buffer is pristine and protected
-  (set-buffer-multibyte nil)
-  (setq buffer-read-only t)
-  ;; `undo` works by tracking binary mutations inside this buffer.
   (when (= (buffer-size) 0)
     (error "Buffer is empty; there is no database content to inspect"))
-  ;; Create or get UI buffer
-  (let* ((bin-buf (current-buffer))
-         (ui-name (format "*g: %s*" (buffer-name)))
-         (ui-buf (get-buffer-create (generate-new-buffer-name ui-name))))
-    (with-current-buffer ui-buf
-      (g-mode-ui-mode)
-      (setq g-mode--binary-buffer bin-buf)
-      (g-mode--update-ui))
-    (pop-to-buffer ui-buf)
-    ui-buf))
+  (let* ((original-buf (current-buffer))
+         (file-name (buffer-name))
+         (hidden-name (generate-new-buffer-name (format " *g-binary %s*" file-name)))
+         (bin-buf (generate-new-buffer hidden-name)))
+    (with-current-buffer bin-buf
+      (set-buffer-multibyte nil)
+      (insert-buffer-substring-no-properties original-buf)
+      (buffer-disable-undo)
+      (buffer-enable-undo))
+    (set-buffer-multibyte t)
+    (g-mode-ui-mode)
+    (setq g-mode--binary-buffer bin-buf)
+    (add-hook 'write-contents-functions #'g-mode--write-contents nil t)
+    (buffer-disable-undo)
+    (let ((inhibit-read-only t))
+      (erase-buffer))
+    (set-buffer-modified-p nil)
+    (g-mode--update-ui)
+    (current-buffer)))
 
 (provide 'g-mode)
 
