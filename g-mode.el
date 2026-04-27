@@ -1460,7 +1460,9 @@ Uses a fault-resilient multi-phase approach:
 (defun g-mode-move-up ()
   "Move selected objects UP one logical position."
   (interactive)
-  (let ((targets (g-mode--get-targets)))
+  (let* ((targets (g-mode--get-targets))
+         (focus-id (tabulated-list-get-id))
+         (focus-obj (and focus-id (cl-find focus-id g-mode--objects :key (lambda (o) (cdr (assq 'pos o)))))))
     (unless targets (user-error "No objects selected"))
     (let* ((marked-objs (cl-remove-if-not (lambda (o) (member (cdr (assq 'pos o)) targets)) g-mode--objects)))
       (with-current-buffer g-mode--binary-buffer (undo-boundary))
@@ -1471,12 +1473,16 @@ Uses a fault-resilient multi-phase approach:
               (unless (memq prev-obj marked-objs)
                 (g-mode--swap-adjacent (1- idx)))))))
       (with-current-buffer g-mode--binary-buffer (undo-boundary))
-      (g-mode--update-ui))))
+      (g-mode--update-ui)
+      (when focus-obj
+        (g-mode--goto-record (cdr (assq 'pos focus-obj)))))))
 
 (defun g-mode-move-down ()
   "Move selected objects DOWN one logical position."
   (interactive)
-  (let ((targets (g-mode--get-targets)))
+  (let* ((targets (g-mode--get-targets))
+         (focus-id (tabulated-list-get-id))
+         (focus-obj (and focus-id (cl-find focus-id g-mode--objects :key (lambda (o) (cdr (assq 'pos o)))))))
     (unless targets (user-error "No objects selected"))
     (let* ((target-objs (cl-remove-if-not (lambda (o) (member (cdr (assq 'pos o)) targets)) g-mode--objects))
            (marked-objs (reverse target-objs)))
@@ -1488,7 +1494,9 @@ Uses a fault-resilient multi-phase approach:
               (unless (memq next-obj marked-objs)
                 (g-mode--swap-adjacent idx))))))
       (with-current-buffer g-mode--binary-buffer (undo-boundary))
-      (g-mode--update-ui))))
+      (g-mode--update-ui)
+      (when focus-obj
+        (g-mode--goto-record (cdr (assq 'pos focus-obj)))))))
 
 (defvar g-mode-ui-mode-map
   (let ((map (make-sparse-keymap)))
@@ -1551,10 +1559,17 @@ Uses a fault-resilient multi-phase approach:
     (if (not (buffer-live-p g-mode--binary-buffer))
         (error "Binary buffer is no longer live")
       (with-current-buffer g-mode--binary-buffer
-        (write-region (point-min) (point-max) file nil t))))
-  (set-buffer-modified-p nil)
-  (message "Database saved.")
-  t)
+        ;; Use 'quiet to avoid changing the binary buffer's visited file or spamming messages
+        (write-region (point-min) (point-max) file nil 'quiet)))
+    (set-visited-file-modtime)
+    (set-buffer-modified-p nil)
+    (message "Database saved.")
+    t))
+
+(defun g-mode--kill-binary-buffer ()
+  "Kill the hidden binary buffer when the UI buffer is killed."
+  (when (buffer-live-p g-mode--binary-buffer)
+    (kill-buffer g-mode--binary-buffer)))
 
 (defun g-mode-help ()
   (message "v:view d:del m:mark u/U:unmk x:gc C:copy C-_:undo g:rev ?:help"))
@@ -1572,12 +1587,15 @@ Maintains a hidden binary buffer and uses the current buffer as the UI."
     (with-current-buffer bin-buf
       (set-buffer-multibyte nil)
       (insert-buffer-substring-no-properties original-buf)
+      (set-buffer-modified-p nil)
       (buffer-disable-undo)
       (buffer-enable-undo))
     (set-buffer-multibyte t)
     (g-mode-ui-mode)
     (setq g-mode--binary-buffer bin-buf)
     (add-hook 'write-contents-functions #'g-mode--write-contents nil t)
+    (add-hook 'kill-buffer-hook #'g-mode--kill-binary-buffer nil t)
+    (auto-save-mode -1)
     (buffer-disable-undo)
     (let ((inhibit-read-only t))
       (erase-buffer))
