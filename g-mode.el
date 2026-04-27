@@ -584,16 +584,20 @@ Returns an alist of (KEY . VALUE) strings, or nil."
   "Refresh entries, print the UI, and restore visual marks."
   (g-mode--refresh-entries)
   (let ((max-name-len 4)
-        (max-type-len 4))
+        (max-type-len 4)
+        (max-id-len 2))
     (dolist (entry tabulated-list-entries)
       (let* ((vec (cadr entry))
              (name (aref vec 1))
-             (type-str (aref vec 2)))
+             (type-str (aref vec 2))
+             (id-str (aref vec 3)))
         (setq max-name-len (max max-name-len (length name)))
-        (setq max-type-len (max max-type-len (length type-str)))))
+        (setq max-type-len (max max-type-len (length type-str)))
+        (setq max-id-len (max max-id-len (length id-str)))))
     (setq tabulated-list-format (vector '("#" 4 t)
                                         (list "Name" (+ 3 max-name-len) t)
                                         (list "Type" (+ 3 max-type-len) t)
+                                        (list "Id" (+ 3 max-id-len) t)
                                         '("Size" 8 t)
                                         '("Flags" 6 nil)))
     (tabulated-list-init-header))
@@ -626,6 +630,7 @@ Returns an alist of (KEY . VALUE) strings, or nil."
                       (vector "0"
                               (if face (propertize name 'face face) name)
                               "Database Header"
+                              "-"
                               (number-to-string (cdr (assq 'length g-mode--header-info)))
                               "HDR"))
                 entries)))
@@ -640,7 +645,7 @@ Returns an alist of (KEY . VALUE) strings, or nil."
                    (minor (cdr (assq 'minor-type obj)))
                    (len (cdr (assq 'length obj)))
                    (type-name (g-mode--get-type-name major minor))
-                   (type-str (format "%s (%d,%d)" type-name major minor))
+                   (id-str (format "%d,%d" major minor))
                    (face (cond (is-corrupt 'g-mode-corrupt-face)
                                (is-deleted 'g-mode-deleted-face)
                                (t nil)))
@@ -651,7 +656,8 @@ Returns an alist of (KEY . VALUE) strings, or nil."
               (push (list (cdr (assq 'pos obj))
                           (vector (number-to-string idx)
                                   (if face (propertize display-name 'face face) display-name)
-                                  type-str
+                                  type-name
+                                  id-str
                                   (number-to-string len)
                                   (format "%02X" hflags)))
                     entries)))
@@ -1509,6 +1515,7 @@ Uses a fault-resilient multi-phase approach:
   (setq tabulated-list-format [("#" 4 t)
                                ("Name" 30 t)
                                ("Type" 25 t)
+                               ("Id" 6 t)
                                ("Size"  8 t)
                                ("Flags" 6 nil)])
   (setq tabulated-list-padding 2)
