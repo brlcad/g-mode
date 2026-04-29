@@ -413,5 +413,20 @@
         (when (buffer-live-p ui-buf) (kill-buffer ui-buf))
         (when (buffer-live-p bin-buf) (with-current-buffer bin-buf (setq buffer-read-only nil))))))
 
+
+(ert-deftest g-mode-filter-test ()
+  "Test filtering the object list by a regular expression."
+  (with-g-mode-test-setup "references/geometry/moss.g"
+    (let ((initial-entries (length tabulated-list-entries)))
+      ;; Filter by "tor"
+      (g-mode-filter "tor")
+      ;; The header is always kept, plus the "tor" object
+      (should (= (length tabulated-list-entries) 2))
+      (should (string-match-p "tor" (aref (cadr (nth 1 tabulated-list-entries)) 1)))
+      
+      ;; Clear filter
+      (g-mode-filter "")
+      (should (= (length tabulated-list-entries) initial-entries)))))
+
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here
