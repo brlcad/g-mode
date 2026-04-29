@@ -59,7 +59,7 @@
     (let ((objects (g-mode--scan-buffer)))
       (should (> (length objects) 10))
       (should (eq (cdr (assq 'magic1 (car objects))) #x76))
-      (should (equal (cdr (assq 'length (car objects))) 96)))))
+      (should (equal (cdr (assq 'length (car objects))) 96))))))
 
 (defmacro with-g-mode-test-setup (filename &rest body)
   "Set up a g-mode test environment with FILENAME and clean up afterwards."
@@ -77,7 +77,8 @@
          ;; bin-buf is handled by with-temp-buffer normally,
          ;; but g-mode sets buffer-read-only, which might cause issues
          ;; if with-temp-buffer tries to erase it.
-         (with-current-buffer bin-buf (setq buffer-read-only nil))))))
+         (when (buffer-live-p bin-buf)
+           (with-current-buffer bin-buf (setq buffer-read-only nil))))))
 
 (ert-deftest g-mode-ui-test ()
   "Test the tabulated-list UI initialization."
@@ -140,6 +141,21 @@
       (should-not g-mode-show-deleted)
       ;; Now it should be smaller, as it hides the Free Space (deleted) objects!
       (should (< (length tabulated-list-entries) initial-entries)))))
+
+(ert-deftest g-mode-filter-test ()
+  "Test filtering the object list by a regular expression."
+  (with-g-mode-test-setup "references/geometry/moss.g"
+    (let ((initial-entries (length tabulated-list-entries)))
+      ;; Filter by "tor"
+      (g-mode-filter "tor")
+      ;; The header is always kept, plus the "tor" object
+      (should (= (length tabulated-list-entries) 2))
+      (should (string-match-p "tor" (aref (cadr (nth 1 tabulated-list-entries)) 1)))
+      
+      ;; Clear filter
+      (g-mode-filter "")
+      (should (= (length tabulated-list-entries) initial-entries)))))
+
 
 (ert-deftest g-mode-rename-inline-test ()
   "Test in-place rename logic for smaller names."
@@ -347,7 +363,7 @@
             (should (g-mode--lookup-record :header))
             (should (> (length g-mode--objects) 0)))
         (when (buffer-live-p ui-buf) (kill-buffer ui-buf))
-        (with-current-buffer bin-buf (setq buffer-read-only nil))))))
+        (when (buffer-live-p bin-buf) (with-current-buffer bin-buf (setq buffer-read-only nil))))))
 
 (ert-deftest g-mode-corrupt-object-diagnostics-test ()
   "Malformed objects should surface structured diagnostics."
@@ -392,10 +408,10 @@
               (should (cdr (assq 'valid g-mode--header-info)))
               (let ((header-entry (cl-find :header tabulated-list-entries :key #'car :test #'equal)))
                 (should header-entry)
-                (should (equal "<database header>" (aref (cadr header-entry) 1))))))
+                (should (equal "<database header>" (aref (cadr header-entry) 1))))
         (when (buffer-live-p inspector-buf) (kill-buffer inspector-buf))
         (when (buffer-live-p ui-buf) (kill-buffer ui-buf))
-        (with-current-buffer bin-buf (setq buffer-read-only nil))))))
+        (when (buffer-live-p bin-buf) (with-current-buffer bin-buf (setq buffer-read-only nil))))))
 
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here
