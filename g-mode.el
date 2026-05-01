@@ -1571,7 +1571,8 @@ Uses a fault-resilient multi-phase approach:
 
 (defun g-mode--write-contents ()
   "Save the changes in the hidden binary buffer to the visited file."
-  (let ((file buffer-file-name))
+  (let ((file buffer-file-name)
+        (file-precious-flag t))
     (if (not (buffer-live-p g-mode--binary-buffer))
         (error "Binary buffer is no longer live")
       (with-current-buffer g-mode--binary-buffer
