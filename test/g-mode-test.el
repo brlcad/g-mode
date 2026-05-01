@@ -73,12 +73,13 @@
        (unwind-protect
            (with-current-buffer ui-buf
              ,@body)
-         (when (buffer-live-p ui-buf) (kill-buffer ui-buf))
          ;; bin-buf is handled by with-temp-buffer normally,
          ;; but g-mode sets buffer-read-only, which might cause issues
          ;; if with-temp-buffer tries to erase it.
          (when (buffer-live-p bin-buf)
-           (with-current-buffer bin-buf (setq buffer-read-only nil))))))
+           (with-current-buffer bin-buf (setq buffer-read-only nil)))
+         (when (buffer-live-p ui-buf)
+           (kill-buffer ui-buf))))))
 
 (ert-deftest g-mode-ui-test ()
   "Test the tabulated-list UI initialization."
@@ -362,6 +363,7 @@
             (should-not (cdr (assq 'valid g-mode--header-info)))
             (should (g-mode--lookup-record :header))
             (should (> (length g-mode--objects) 0)))
+        (when (buffer-live-p ui-buf) (with-current-buffer ui-buf (setq buffer-read-only nil)))
         (when (buffer-live-p ui-buf) (kill-buffer ui-buf))
         (when (buffer-live-p bin-buf) (with-current-buffer bin-buf (setq buffer-read-only nil))))))
 
@@ -393,23 +395,34 @@
            inspector-buf)
       (unwind-protect
           (progn
+            ;; Try parsing the header directly in bin buffer to show it's invalid
+            (with-current-buffer g-mode--binary-buffer
+              (should-not (cdr (assq 'valid (g-mode--parse-header)))))
+            
+            ;; Open inspector for the header
             (with-current-buffer ui-buf
               (goto-char (point-min))
               (should (equal :header (tabulated-list-get-id)))
               (g-mode-view-object))
             (setq inspector-buf (get-buffer "*g-mode: <database header>*"))
             (should inspector-buf)
+            
+            ;; Emulate pressing 'r' (repair) in inspector
             (with-current-buffer inspector-buf
               (should (string-match-p "Rewrite Canonical Header" (buffer-string)))
               (g-mode--inspector-repair-header))
-            (with-current-buffer bin-buf
+            
+            ;; Verify it is now valid in the bin buffer
+            (with-current-buffer g-mode--binary-buffer
               (should (g-mode--parse-header)))
+            
             (with-current-buffer ui-buf
               (should (cdr (assq 'valid g-mode--header-info)))
               (let ((header-entry (cl-find :header tabulated-list-entries :key #'car :test #'equal)))
                 (should header-entry)
                 (should (equal "<database header>" (aref (cadr header-entry) 1))))
         (when (buffer-live-p inspector-buf) (kill-buffer inspector-buf))
+        (when (buffer-live-p ui-buf) (with-current-buffer ui-buf (setq buffer-read-only nil)))
         (when (buffer-live-p ui-buf) (kill-buffer ui-buf))
         (when (buffer-live-p bin-buf) (with-current-buffer bin-buf (setq buffer-read-only nil))))))
 
@@ -418,8 +431,8 @@
   "Test filtering the object list by a regular expression."
   (with-g-mode-test-setup "references/geometry/moss.g"
     (let ((initial-entries (length tabulated-list-entries)))
-      ;; Filter by "tor"
-      (g-mode-filter "tor")
+      ;; Filter by "^tor$"
+      (g-mode-filter "^tor$")
       ;; The header is always kept, plus the "tor" object
       (should (= (length tabulated-list-entries) 2))
       (should (string-match-p "tor" (aref (cadr (nth 1 tabulated-list-entries)) 1)))

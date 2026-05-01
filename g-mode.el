@@ -85,8 +85,8 @@ Return nil if the requested span falls outside LIMIT."
       (g-mode--read-uint bytes))))
 
 (defun g-mode--canonical-header-bytes ()
-  "Return the canonical DB5 8-byte header as a raw string."
-  (string g-mode-magic1 1 0 0 0 0 1 g-mode-magic2))
+  "Return the canonical 8-byte DB5 header as a unibyte string."
+  (unibyte-string #x76 #x01 #x00 #x00 #x00 #x00 #x01 #x35))
 
 (defun g-mode--analyze-header ()
   "Analyze the database header and return a recovery-oriented record."
@@ -573,12 +573,24 @@ Returns an alist of (KEY . VALUE) strings, or nil."
 (defvar-local g-mode-show-deleted t
   "If non-nil, show Free Space (deleted) and invalid objects in the list.")
 
+(defvar-local g-mode-filter-regexp nil
+  "Regular expression used to filter the list of objects. Nil means no filter.")
+
 (defun g-mode-toggle-show-deleted ()
   "Toggle visibility of deleted/Free Space objects in the database."
   (interactive)
   (setq g-mode-show-deleted (not g-mode-show-deleted))
   (g-mode--update-ui)
   (message "Deleted objects are now %s." (if g-mode-show-deleted "visible" "hidden")))
+
+(defun g-mode-filter (regexp)
+  "Filter the object list to only show items matching REGEXP."
+  (interactive "sFilter regexp (empty to clear): ")
+  (if (string-empty-p regexp)
+      (setq g-mode-filter-regexp nil)
+    (setq g-mode-filter-regexp regexp))
+  (g-mode--update-ui)
+  (message "Filter %s" (if g-mode-filter-regexp (format "set to '%s'" regexp) "cleared")))
 
 (defun g-mode--update-ui ()
   "Refresh entries, print the UI, and restore visual marks."
@@ -645,10 +657,12 @@ Returns an alist of (KEY . VALUE) strings, or nil."
         (let* ((hflags (cdr (assq 'hflags obj)))
                (dli (logand hflags #x03))
                (is-deleted (= dli 2))
-               (is-corrupt (cdr (assq 'corrupt obj))))
-          (when (or g-mode-show-deleted (and (not is-deleted) (not is-corrupt)))
-            (let* ((name (cdr (assq 'name obj)))
-                   (major (cdr (assq 'major-type obj)))
+               (is-corrupt (cdr (assq 'corrupt obj)))
+               (name (cdr (assq 'name obj))))
+          (when (and (or g-mode-show-deleted (and (not is-deleted) (not is-corrupt)))
+                     (or (null g-mode-filter-regexp)
+                         (and name (string-match-p g-mode-filter-regexp name))))
+            (let* ((major (cdr (assq 'major-type obj)))
                    (minor (cdr (assq 'minor-type obj)))
                    (len (cdr (assq 'length obj)))
                    (type-name (g-mode--get-type-name major minor))
@@ -1516,6 +1530,8 @@ Uses a fault-resilient multi-phase approach:
     
     (define-key map (kbd "v") 'g-mode-view-object)
     (define-key map (kbd "h") 'g-mode-toggle-show-deleted)
+    (define-key map (kbd "f") 'g-mode-filter)
+    (define-key map (kbd "/") 'g-mode-filter)
     (define-key map (kbd "RET") 'g-mode-view-object)
     (define-key map (kbd "d") 'g-mode-delete-object)
     (define-key map (kbd "R") 'g-mode-rename-object)
