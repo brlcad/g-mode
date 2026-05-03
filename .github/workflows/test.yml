@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        emacs_version: ['28.2', '29.4', 'snapshot']
+        # We start at 28.2 because g-mode.el requires Emacs 28.1+
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Emacs
+      uses: purcell/setup-emacs@master
+      with:
+        version: ${{ matrix.emacs_version }}
+        
+    - name: Run tests
+      run: |
+        emacs -Q -batch -L . -l g-mode.el -l test/g-mode-test.el -f ert-run-tests-batch-and-exit
