@@ -22,7 +22,7 @@
   "Test that the db header is correctly identified using the bindat type."
   (with-temp-buffer
     (set-buffer-multibyte nil)
-    (insert-file-contents-literally "references/geometry/moss.g")
+    (insert-file-contents-literally "test/moss.g")
     (let ((header (g-mode--parse-header)))
       (should header)
       (should (eq (cdr (assq 'magic1 header)) #x76))
@@ -34,7 +34,7 @@
   "Test that generic objects are correctly parsed."
   (with-temp-buffer
     (set-buffer-multibyte nil)
-    (insert-file-contents-literally "references/geometry/moss.g")
+    (insert-file-contents-literally "test/moss.g")
     
     ;; First object after header is Free space (at byte 9)
     ;; Note: Emacs points are 1-indexed, so byte index 8 is point 9.
@@ -55,7 +55,7 @@
   "Test scanning an entire file."
   (with-temp-buffer
     (set-buffer-multibyte nil)
-    (insert-file-contents-literally "references/geometry/moss.g")
+    (insert-file-contents-literally "test/moss.g")
     (let ((objects (g-mode--scan-buffer)))
       (should (> (length objects) 10))
       (should (eq (cdr (assq 'magic1 (car objects))) #x76))
@@ -83,7 +83,7 @@
 
 (ert-deftest g-mode-ui-test ()
   "Test the tabulated-list UI initialization."
-  (with-g-mode-test-setup "references/geometry/moss.g"
+  (with-g-mode-test-setup "test/moss.g"
                           (should g-mode--objects)
                           (should tabulated-list-entries)
                           (should (> (length tabulated-list-entries) 10))
@@ -93,7 +93,7 @@
   "Test attribute parsing on an object with attributes."
   (with-temp-buffer
     (set-buffer-multibyte nil)
-    (insert-file-contents-literally "references/geometry/moss.g")
+    (insert-file-contents-literally "test/moss.g")
     (let* ((objects (g-mode--scan-buffer))
            (global-obj (cl-find "_GLOBAL" objects :key (lambda (o) (cdr (assq 'name o))) :test 'equal)))
       (should global-obj)
@@ -104,7 +104,7 @@
 
 (ert-deftest g-mode-delete-undelete-test ()
   "Test marking an object as Free Space and then undeleting it."
-  (with-g-mode-test-setup "references/geometry/moss.g"
+  (with-g-mode-test-setup "test/moss.g"
                           (let ((orig-len (length g-mode--objects)))
                             ;; Find "tor"
                             (goto-char (point-min))
@@ -133,7 +133,7 @@
 
 (ert-deftest g-mode-ui-toggle-test ()
   "Test toggling of deleted items in UI."
-  (with-g-mode-test-setup "references/geometry/moss.g"
+  (with-g-mode-test-setup "test/moss.g"
                           ;; By default, show-deleted is now t.
                           (should g-mode-show-deleted)
                           (let ((initial-entries (length tabulated-list-entries)))
@@ -145,7 +145,7 @@
 
 (ert-deftest g-mode-simple-filter-test ()
   "Test filtering the object list by a simple name match."
-  (with-g-mode-test-setup "references/geometry/moss.g"
+  (with-g-mode-test-setup "test/moss.g"
                           (let ((initial-entries (length tabulated-list-entries)))
                             ;; Filter by "tor"
                             (g-mode-filter "tor.r")
@@ -159,7 +159,7 @@
 
 (ert-deftest g-mode-filter-test ()
   "Test filtering the object list by a regular expression."
-  (with-g-mode-test-setup "references/geometry/moss.g"
+  (with-g-mode-test-setup "test/moss.g"
                           (let ((initial-entries (length tabulated-list-entries)))
                             ;; Filter by "^to[r]$"
                             (g-mode-filter "^to[r]$")
@@ -173,7 +173,7 @@
 
 (ert-deftest g-mode-rename-inline-test ()
   "Test in-place rename logic for smaller names."
-  (with-g-mode-test-setup "references/geometry/moss.g"
+  (with-g-mode-test-setup "test/moss.g"
                           ;; Force simulated point to "tor" row by searching the UI list
                           (goto-char (point-min))
                           (while (and (not (eobp))
@@ -191,7 +191,7 @@
 
 (ert-deftest g-mode-rename-append-test ()
   "Test append rename logic for longer names."
-  (with-g-mode-test-setup "references/geometry/moss.g"
+  (with-g-mode-test-setup "test/moss.g"
                           (let ((orig-objects (length g-mode--objects)))
                             ;; Force simulated point to "tor" row by searching the UI list
                             (goto-char (point-min))
@@ -216,7 +216,7 @@
 
 (ert-deftest g-mode-garbage-collect-test ()
   "Test fault-resilient garbage collection compaction."
-  (with-g-mode-test-setup "references/geometry/moss.g"
+  (with-g-mode-test-setup "test/moss.g"
                           (let ((original-size (with-current-buffer g-mode--binary-buffer (buffer-size))))
                             ;; Delete "tor"
                             (goto-char (point-min))
@@ -258,7 +258,7 @@
 
 (ert-deftest g-mode-mark-unmark-test ()
   "Test marking and unmarking in UI."
-  (with-g-mode-test-setup "references/geometry/moss.g"
+  (with-g-mode-test-setup "test/moss.g"
                           (goto-char (point-min))
                           (forward-line 1)
                           (g-mode-mark)
@@ -269,7 +269,7 @@
 
 (ert-deftest g-mode-copy-test ()
   "Test copying an object."
-  (with-g-mode-test-setup "references/geometry/moss.g"
+  (with-g-mode-test-setup "test/moss.g"
                           (let ((orig-objects (length g-mode--objects)))
                             (goto-char (point-min))
                             (while (and (not (eobp))
@@ -283,7 +283,7 @@
 
 (ert-deftest g-mode-move-up-down-test ()
   "Test moving objects up and down."
-  (with-g-mode-test-setup "references/geometry/moss.g"
+  (with-g-mode-test-setup "test/moss.g"
                           (let* ((nameA (cdr (assq 'name (nth 0 g-mode--objects))))
                                  (nameB (cdr (assq 'name (nth 1 g-mode--objects))))
                                  (nameC (cdr (assq 'name (nth 2 g-mode--objects))))
@@ -348,7 +348,7 @@
 
 (ert-deftest g-mode-undo-test ()
   "Test that EMACS undo reverses file mutations and refreshes UI."
-  (with-g-mode-test-setup "references/geometry/moss.g"
+  (with-g-mode-test-setup "test/moss.g"
                           (goto-char (point-min))
                           (while (and (not (eobp))
                                       (not (equal "tor" (aref (tabulated-list-get-entry (point)) 1))))
@@ -367,7 +367,7 @@
   (with-temp-buffer
     (buffer-enable-undo)
     (set-buffer-multibyte nil)
-    (insert-file-contents-literally "references/geometry/moss.g")
+    (insert-file-contents-literally "test/moss.g")
     (g-mode--write-byte (point-min) 0)
     (let* ((bin-buf (current-buffer))
            (ui-buf (g-mode)))
@@ -384,7 +384,7 @@
   "Malformed objects should surface structured diagnostics."
   (with-temp-buffer
     (set-buffer-multibyte nil)
-    (insert-file-contents-literally "references/geometry/moss.g")
+    (insert-file-contents-literally "test/moss.g")
     (let* ((obj (g-mode--parse-object 105))
            (magic2-pos (1- (+ 105 (cdr (assq 'length obj))))))
       (should obj)
@@ -401,7 +401,7 @@
   (with-temp-buffer
     (buffer-enable-undo)
     (set-buffer-multibyte nil)
-    (insert-file-contents-literally "references/geometry/moss.g")
+    (insert-file-contents-literally "test/moss.g")
     (g-mode--write-byte (point-min) 0)
     (let* ((bin-buf (current-buffer))
            (ui-buf (g-mode))
