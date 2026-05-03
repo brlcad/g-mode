@@ -198,7 +198,7 @@ Return nil if the requested span falls outside LIMIT."
             (cons 'major-type (cdr (assq 'major-type header)))
             (cons 'minor-type (cdr (assq 'minor-type header)))
             (cons 'length (cdr (car (last (cl-remove-if-not (lambda (cell) (eq (car cell) 'length))
-                                                           header)))))
+                                                            header)))))
             (cons 'magic2 (cdr (assq 'magic2 header)))))))
 
 (defconst g-mode-object-fixed-header
@@ -660,7 +660,7 @@ Returns an alist of (KEY . VALUE) strings, or nil."
     (setq g-mode--header-info (with-current-buffer g-mode--binary-buffer (g-mode--analyze-header)))
     (setq g-mode--objects (with-current-buffer g-mode--binary-buffer (g-mode--scan-buffer)))
     (setq g-mode--expected-tick (with-current-buffer g-mode--binary-buffer (buffer-chars-modified-tick))))
-    
+  
   (let ((entries nil)
         (idx 1))
     (when g-mode--header-info
@@ -677,38 +677,38 @@ Returns an alist of (KEY . VALUE) strings, or nil."
                             "HDR"))
               entries)))
     (dolist (obj g-mode--objects)
-        (let* ((hflags (cdr (assq 'hflags obj)))
-               (dli (logand hflags #x03))
-               (is-deleted (= dli 2))
-               (is-corrupt (cdr (assq 'corrupt obj)))
-               (name (cdr (assq 'name obj))))
-          (when (and (or g-mode-show-deleted (and (not is-deleted) (not is-corrupt)))
-                     (or (null g-mode-filter-regexp)
-                         (and name (string-match-p g-mode-filter-regexp name))))
-            (let* ((major (cdr (assq 'major-type obj)))
-                   (minor (cdr (assq 'minor-type obj)))
-                   (len (cdr (assq 'length obj)))
-                   (type-name (g-mode--get-type-name major minor))
-                   (id-str (format "%d,%d" major minor))
-                   (pos-str (number-to-string (1- (cdr (assq 'pos obj)))))
-                   (face (cond (is-corrupt 'g-mode-corrupt-face)
-                               (is-deleted 'g-mode-deleted-face)
-                               (t nil)))
-                   (display-name (cond (is-corrupt "<corrupt>")
-                                       (is-deleted "<Free Space>")
-                                       (t (or name "<unnamed>")))))
-              ;; The ID is the object's position in the binary buffer.
-              (push (list (cdr (assq 'pos obj))
-                          (vector (number-to-string idx)
-                                  (if face (propertize display-name 'face face) display-name)
-                                  type-name
-                                  id-str
-                                  pos-str
-                                  (number-to-string len)
-                                  (format "%02X" hflags)))
-                    entries)))
-          (cl-incf idx)))
-      (setq tabulated-list-entries (nreverse entries))))
+      (let* ((hflags (cdr (assq 'hflags obj)))
+             (dli (logand hflags #x03))
+             (is-deleted (= dli 2))
+             (is-corrupt (cdr (assq 'corrupt obj)))
+             (name (cdr (assq 'name obj))))
+        (when (and (or g-mode-show-deleted (and (not is-deleted) (not is-corrupt)))
+                   (or (null g-mode-filter-regexp)
+                       (and name (string-match-p g-mode-filter-regexp name))))
+          (let* ((major (cdr (assq 'major-type obj)))
+                 (minor (cdr (assq 'minor-type obj)))
+                 (len (cdr (assq 'length obj)))
+                 (type-name (g-mode--get-type-name major minor))
+                 (id-str (format "%d,%d" major minor))
+                 (pos-str (number-to-string (1- (cdr (assq 'pos obj)))))
+                 (face (cond (is-corrupt 'g-mode-corrupt-face)
+                             (is-deleted 'g-mode-deleted-face)
+                             (t nil)))
+                 (display-name (cond (is-corrupt "<corrupt>")
+                                     (is-deleted "<Free Space>")
+                                     (t (or name "<unnamed>")))))
+            ;; The ID is the object's position in the binary buffer.
+            (push (list (cdr (assq 'pos obj))
+                        (vector (number-to-string idx)
+                                (if face (propertize display-name 'face face) display-name)
+                                type-name
+                                id-str
+                                pos-str
+                                (number-to-string len)
+                                (format "%02X" hflags)))
+                  entries)))
+        (cl-incf idx)))
+    (setq tabulated-list-entries (nreverse entries))))
 
 (defvar-local g-mode--inspector-source-buffer nil
   "The `g-mode-ui-mode' buffer that owns the current inspector.")
@@ -774,7 +774,7 @@ Returns an alist of (KEY . VALUE) strings, or nil."
         (id g-mode--inspector-record-id))
     (when (buffer-live-p ui-buf)
       (with-current-buffer ui-buf
-      (g-mode--refresh-entries)
+        (g-mode--refresh-entries)
         (g-mode--lookup-record id)))))
 
 (defun g-mode--inspector-refresh ()
@@ -927,7 +927,7 @@ Returns an alist of (KEY . VALUE) strings, or nil."
        (lambda () (g-mode--inspector-rewrite-free record))
        "Rewrite this span as a canonical free-space object.")))
    (t
-   (when (cdr (assq 'name record))
+    (when (cdr (assq 'name record))
       (g-mode--insert-button
        "[Rename]"
        (lambda () (g-mode--inspector-run-ui-command #'g-mode-rename-object))))
@@ -1128,11 +1128,11 @@ maximum possible interior span to guard against corrupt length fields."
         (let* ((objects (with-current-buffer g-mode--binary-buffer (g-mode--scan-buffer)))
                (obj (cl-find id objects :key (lambda (o) (cdr (assq 'pos o))))))
           (when (and obj (= (logand (cdr (assq 'hflags obj)) #x03) 2))
-             (g-mode--set-dli-at id g-mode--binary-buffer 0)
-             (setq g-mode--session-deleted-objects (delete id g-mode--session-deleted-objects))
-             (message "Undeleted object '%s'." (or (cdr (assq 'name obj)) "unnamed"))
-             (g-mode--update-ui)
-             (forward-line -1))))
+            (g-mode--set-dli-at id g-mode--binary-buffer 0)
+            (setq g-mode--session-deleted-objects (delete id g-mode--session-deleted-objects))
+            (message "Undeleted object '%s'." (or (cdr (assq 'name obj)) "unnamed"))
+            (g-mode--update-ui)
+            (forward-line -1))))
       (forward-line 1))))
 
 (defun g-mode-unmark-backward ()
@@ -1183,10 +1183,10 @@ maximum possible interior span to guard against corrupt length fields."
           (when (integerp id)
             (let* ((obj (cl-find id objects :key (lambda (o) (cdr (assq 'pos o)))))
                    (name (cdr (assq 'name obj))))
-               (when (and name (string-match regexp name)
-                          (not (cl-find id g-mode--marked-objects :test #'=)))
-                 (g-mode--add-marker id 'g-mode--marked-objects)
-                 (cl-incf marked)))))
+              (when (and name (string-match regexp name)
+                         (not (cl-find id g-mode--marked-objects :test #'=)))
+                (g-mode--add-marker id 'g-mode--marked-objects)
+                (cl-incf marked)))))
         (forward-line 1)))
     (g-mode--update-ui)
     (message "Marked %d objects." marked)))
@@ -1263,14 +1263,14 @@ rename in-place. If longer, append a new copy and mark old as Free Space."
                                  (available (- magic2-pos name-pos))
                                  (padding-size (- available new-nlen int-size))
                                  (replacement (concat new-name-data interior-data
-                                                     (make-string padding-size 0))))
+                                                      (make-string padding-size 0))))
                             (goto-char nlen-field-pos)
                             (delete-char nlen-bytes)
                             (insert (g-mode--uint-to-bytes new-nlen nlen-bytes))
                             (delete-region name-pos magic2-pos)
                             (goto-char name-pos)
                             (insert replacement)))
-                      (setf (cdr (assq 'name obj)) new-name))
+                        (setf (cdr (assq 'name obj)) new-name))
                     (let* ((n-res (g-mode--calc-width-prefix new-nlen))
                            (new-nwid (car n-res))
                            (new-nlen-bytes (cdr n-res))
@@ -1313,7 +1313,7 @@ rename in-place. If longer, append a new copy and mark old as Free Space."
                               (goto-char appended-pos)
                               (let ((inhibit-read-only t))
                                 (insert full-str))))
-                        
+                          
                           (g-mode--set-dli-at (cdr (assq 'pos obj)) bin-buf 2)
                           (setf (cdr (assq 'hflags obj)) (logior (logand hflags #xFC) 2))
                           (g-mode--add-marker (cdr (assq 'pos obj)) 'g-mode--session-deleted-objects)
