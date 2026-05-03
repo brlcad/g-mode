@@ -24,6 +24,7 @@
 (require 'bindat)
 (require 'button)
 (require 'tabulated-list)
+(require 'subr-x)
 
 (defgroup g-mode nil
   "Major mode for reading and editing BRL-CAD .g geometry database files."
