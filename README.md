@@ -1,5 +1,10 @@
 # g-mode
 
+[![Linux](https://img.shields.io/github/actions/workflow/status/brlcad/g-mode/test.yml?job=test-linux&label=Linux)](https://github.com/brlcad/g-mode/actions/workflows/test.yml)
+[![macOS](https://img.shields.io/github/actions/workflow/status/brlcad/g-mode/test.yml?job=test-macos&label=macOS)](https://github.com/brlcad/g-mode/actions/workflows/test.yml)
+[![Windows](https://img.shields.io/github/actions/workflow/status/brlcad/g-mode/test.yml?job=test-windows&label=Windows)](https://github.com/brlcad/g-mode/actions/workflows/test.yml)
+[![FreeBSD](https://img.shields.io/github/actions/workflow/status/brlcad/g-mode/test.yml?job=test-freebsd&label=FreeBSD)](https://github.com/brlcad/g-mode/actions/workflows/test.yml)
+
 An Emacs major mode for inspecting, browsing, and editing BRL-CAD `.g`
 binary database files natively — no BRL-CAD installation required.
 
