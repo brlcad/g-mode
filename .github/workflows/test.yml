@@ -7,13 +7,14 @@ on:
     branches: [ main, master ]
 
 jobs:
-  test:
+  test-linux:
+    name: Ubuntu Tests (Emacs ${{ matrix.emacs_version }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         emacs_version: ['28.2', '29.4', 'snapshot']
-        # We start at 28.2 because g-mode.el requires Emacs 28.1+
-    
+        
     steps:
     - uses: actions/checkout@v4
     
@@ -23,5 +24,68 @@ jobs:
         version: ${{ matrix.emacs_version }}
         
     - name: Run tests
-      run: |
-        emacs -Q -batch -L . -l g-mode.el -l test/g-mode-test.el -f ert-run-tests-batch-and-exit
+      run: emacs -Q -batch -L . -l g-mode.el -l test/g-mode-test.el -f ert-run-tests-batch-and-exit
+
+  test-macos:
+    name: macOS Tests (Emacs ${{ matrix.emacs_version }})
+    needs: test-linux
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs_version: ['28.2', '29.4', 'snapshot']
+        
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Emacs
+      uses: jcs090218/setup-emacs@master
+      with:
+        version: ${{ matrix.emacs_version }}
+        
+    - name: Run tests
+      run: emacs -Q -batch -L . -l g-mode.el -l test/g-mode-test.el -f ert-run-tests-batch-and-exit
+
+  test-windows:
+    name: Windows Tests (Emacs ${{ matrix.emacs_version }})
+    needs: test-linux
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs_version: ['28.2', '29.4', 'snapshot']
+        
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Emacs
+      uses: jcs090218/setup-emacs@master
+      with:
+        version: ${{ matrix.emacs_version }}
+        
+    - name: Run tests
+      run: emacs -Q -batch -L . -l g-mode.el -l test/g-mode-test.el -f ert-run-tests-batch-and-exit
+
+  test-freebsd:
+    name: FreeBSD Tests (Emacs ${{ matrix.emacs_version }})
+    needs: test-linux
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs_version: ['28', '29', 'devel']
+        
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Run tests in FreeBSD VM
+      uses: vmactions/freebsd-vm@v1
+      with:
+        usesh: true
+        prepare: |
+          if [ "${{ matrix.emacs_version }}" = "devel" ]; then
+            pkg install -y emacs-devel-nox
+          else
+            pkg install -y emacs${{ matrix.emacs_version }}-nox
+          fi
+        run: emacs -Q -batch -L . -l g-mode.el -l test/g-mode-test.el -f ert-run-tests-batch-and-exit
