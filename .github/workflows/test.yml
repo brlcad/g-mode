@@ -76,7 +76,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        emacs_version: ['28', '29', 'devel']
+        emacs_version: ['stable', 'devel']
         
     steps:
     - uses: actions/checkout@v4
@@ -89,6 +89,6 @@ jobs:
           if [ "${{ matrix.emacs_version }}" = "devel" ]; then
             pkg install -y emacs-devel-nox
           else
-            pkg install -y emacs${{ matrix.emacs_version }}-nox
+            pkg install -y emacs-nox
           fi
         run: emacs -Q -batch -L . -l g-mode.el -l test/g-mode-test.el -f ert-run-tests-batch-and-exit
