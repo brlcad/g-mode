@@ -59,7 +59,7 @@
     (let ((objects (g-mode--scan-buffer)))
       (should (> (length objects) 10))
       (should (eq (cdr (assq 'magic1 (car objects))) #x76))
-      (should (equal (cdr (assq 'length (car objects))) 96))))))
+      (should (equal (cdr (assq 'length (car objects))) 96)))))
 
 (defmacro with-g-mode-test-setup (filename &rest body)
   "Set up a g-mode test environment with FILENAME and clean up afterwards."
@@ -143,13 +143,13 @@
       ;; Now it should be smaller, as it hides the Free Space (deleted) objects!
       (should (< (length tabulated-list-entries) initial-entries)))))
 
-(ert-deftest g-mode-filter-test ()
-  "Test filtering the object list by a regular expression."
+(ert-deftest g-mode-simple-filter-test ()
+  "Test filtering the object list by a simple name match."
   (with-g-mode-test-setup "references/geometry/moss.g"
     (let ((initial-entries (length tabulated-list-entries)))
       ;; Filter by "tor"
-      (g-mode-filter "tor")
-      ;; The header is always kept, plus the "tor" object
+      (g-mode-filter "tor.r")
+      ;; The header is always kept, plus the "tor.r" object
       (should (= (length tabulated-list-entries) 2))
       (should (string-match-p "tor" (aref (cadr (nth 1 tabulated-list-entries)) 1)))
       
@@ -157,6 +157,19 @@
       (g-mode-filter "")
       (should (= (length tabulated-list-entries) initial-entries)))))
 
+(ert-deftest g-mode-filter-test ()
+  "Test filtering the object list by a regular expression."
+  (with-g-mode-test-setup "references/geometry/moss.g"
+    (let ((initial-entries (length tabulated-list-entries)))
+      ;; Filter by "^to[r]$"
+      (g-mode-filter "^to[r]$")
+      ;; The header is always kept, plus the "tor" object
+      (should (= (length tabulated-list-entries) 2))
+      (should (string-match-p "tor" (aref (cadr (nth 1 tabulated-list-entries)) 1)))
+      
+      ;; Clear filter
+      (g-mode-filter "")
+      (should (= (length tabulated-list-entries) initial-entries)))))
 
 (ert-deftest g-mode-rename-inline-test ()
   "Test in-place rename logic for smaller names."
@@ -365,7 +378,7 @@
             (should (> (length g-mode--objects) 0)))
         (when (buffer-live-p ui-buf) (with-current-buffer ui-buf (setq buffer-read-only nil)))
         (when (buffer-live-p ui-buf) (kill-buffer ui-buf))
-        (when (buffer-live-p bin-buf) (with-current-buffer bin-buf (setq buffer-read-only nil))))))
+        (when (buffer-live-p bin-buf) (with-current-buffer bin-buf (setq buffer-read-only nil)))))))
 
 (ert-deftest g-mode-corrupt-object-diagnostics-test ()
   "Malformed objects should surface structured diagnostics."
@@ -421,25 +434,10 @@
               (let ((header-entry (cl-find :header tabulated-list-entries :key #'car :test #'equal)))
                 (should header-entry)
                 (should (equal "<database header>" (aref (cadr header-entry) 1))))
-        (when (buffer-live-p inspector-buf) (kill-buffer inspector-buf))
+              (when (buffer-live-p inspector-buf) (kill-buffer inspector-buf))))
         (when (buffer-live-p ui-buf) (with-current-buffer ui-buf (setq buffer-read-only nil)))
         (when (buffer-live-p ui-buf) (kill-buffer ui-buf))
-        (when (buffer-live-p bin-buf) (with-current-buffer bin-buf (setq buffer-read-only nil))))))
-
-
-(ert-deftest g-mode-filter-test ()
-  "Test filtering the object list by a regular expression."
-  (with-g-mode-test-setup "references/geometry/moss.g"
-    (let ((initial-entries (length tabulated-list-entries)))
-      ;; Filter by "^tor$"
-      (g-mode-filter "^tor$")
-      ;; The header is always kept, plus the "tor" object
-      (should (= (length tabulated-list-entries) 2))
-      (should (string-match-p "tor" (aref (cadr (nth 1 tabulated-list-entries)) 1)))
-      
-      ;; Clear filter
-      (g-mode-filter "")
-      (should (= (length tabulated-list-entries) initial-entries)))))
+        (when (buffer-live-p bin-buf) (with-current-buffer bin-buf (setq buffer-read-only nil)))))))
 
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here
