@@ -5,14 +5,18 @@
 ;; Author: Christopher Sean Morrison
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "28.1"))
-;; Keywords: files, tools, bin
+;; Keywords: data, files, tools, bin, brl-cad
+;; SPDX-License-Identifier: MIT
 ;; URL: https://github.com/brlcad/g-mode
 
 ;;; Commentary:
 
-;; A major mode for inspecting, browsing, and editing BRL-CAD `.g` binary database files natively.
-;; It requires Emacs 28.1+ to leverage the modern `bindat` API.
-;; This mode implements its own file handling standalone, without relying on BRL-CAD libraries.
+;; A major mode for inspecting, browsing, and editing BRL-CAD `.g`
+;; binary database files natively.
+
+;; It requires Emacs 28.1+ to leverage the modern `bindat` API.  This
+;; mode implements its own file handling standalone, without relying
+;; on BRL-CAD libraries.
 
 ;;; Code:
 
