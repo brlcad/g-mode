@@ -61,14 +61,26 @@ directly into the binary buffer; the UI refreshes from it.
 
 ## Keybindings
 
-| Key     | Command                        | Description                              |
-|---------|--------------------------------|------------------------------------------|
-| `v`     | `g-mode-view-object`           | Open detailed property inspector         |
-| `RET`   | `g-mode-view-object`           | Same as `v`                              |
-| `d`     | `g-mode-delete-object`         | Mark object as Free Space (DLI=2)        |
-| `R`     | `g-mode-rename-object`         | Rename object (inline or append)         |
-| `G`     | `g-mode-garbage-collect`       | Compact file, reclaiming deleted space   |
-| `h`     | `g-mode-toggle-show-deleted`   | Toggle visibility of Free Space objects  |
+| Key          | Command                         | Description                              |
+|--------------|---------------------------------|------------------------------------------|
+| `v` / `RET`  | `g-mode-view-object`            | Open detailed property inspector         |
+| `o`          | `g-mode-view-object-other-window`| Open inspector in another window         |
+| `d`          | `g-mode-delete-object`          | Mark object as Free Space (DLI=2)        |
+| `R`          | `g-mode-rename-object`          | Rename object (inline or append)         |
+| `C`          | `g-mode-copy-object`            | Create a copy of the selected object     |
+| `M-up` / `M-down` | `g-mode-move-up/down`      | Reorder objects (shifts binary data)     |
+| `m`          | `g-mode-mark`                   | Mark object for multi-select operations  |
+| `u`          | `g-mode-unmark`                 | Unmark object                            |
+| `U`          | `g-mode-unmark-all-marks`       | Clear all marks                          |
+| `% m`        | `g-mode-mark-regexp`            | Mark objects matching a regex            |
+| `f` / `/`    | `g-mode-filter`                 | Filter visible objects by name/regex     |
+| `h`          | `g-mode-toggle-show-deleted`    | Toggle visibility of Free Space objects  |
+| `G` / `x`    | `g-mode-garbage-collect`        | Compact file, reclaiming deleted space   |
+| `g`          | `g-mode-revert`                 | Re-scan the database from disk           |
+| `C-_` / `C-x u`| `g-mode-undo`                  | Undo last mutation (syncs binary & UI)   |
+| `s` / `C-x C-s`| `save-buffer`                  | Save the underlying binary database      |
+| `q`          | `quit-window`                   | Close the UI buffer                      |
+| `?`          | `g-mode-help`                   | Show keybinding help                     |
 
 ## Features
 
@@ -150,11 +162,16 @@ emacs -Q -batch -L . -l test/g-mode-test.el -f ert-run-tests-batch-and-exit
 | `g-mode-scan-buffer-test`      | Full file scan produces correct object count  |
 | `g-mode-ui-test`               | Tabulated list populates correctly            |
 | `g-mode-attributes-test`       | Key=value attribute extraction                |
-| `g-mode-delete-object-test`    | DLI flag mutation + buffer-modified-p         |
+| `g-mode-delete-undelete-test`  | DLI flag toggle + binary sync                 |
 | `g-mode-ui-toggle-test`        | Show/hide deleted filtering                   |
+| `g-mode-filter-test`           | Regex filtering of the UI list                |
 | `g-mode-rename-inline-test`    | In-place rename with NUL padding              |
 | `g-mode-rename-append-test`    | Append new object + free original             |
 | `g-mode-garbage-collect-test`  | 3-phase compaction shrinks buffer             |
+| `g-mode-move-up-down-test`     | Binary reordering of records                  |
+| `g-mode-undo-test`             | Integration of Emacs undo with binary state   |
+| `g-mode-mark-unmark-test`      | UI marking persistence                        |
+| `g-mode-copy-test`             | Appending cloned records                      |
 
 ## License
 
