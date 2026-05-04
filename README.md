@@ -10,13 +10,13 @@ binary database files natively — no BRL-CAD installation required.
 
 ## Overview
 
-`g-mode` implements its own binary parser in pure Emacs Lisp using
-`bindat`, providing a `tabulated-list-mode` UI for navigating `.g`
-geometry databases.  Opening a `.g` file presents a searchable,
-sortable table of database records.  From there you can inspect object
-properties, rename objects, delete objects, compact the file to reclaim
-space, and recover from malformed headers or corrupt object spans
-without leaving Emacs.
+`g-mode` provides a tabular UI for navigating BRL-CAD `.g` geometry
+database files, implementing its own binary parser in pure Emacs Lisp.
+Opening a `.g` file presents a searchable, sortable table of database
+records.  From there you can inspect object properties, rename
+objects, delete objects, reorder objects, compact the file to reclaim
+space, and recover from certain corruption conditions like malformed
+headers or corrupt object spans, all without leaving Emacs.
 
 ## Requirements
 
