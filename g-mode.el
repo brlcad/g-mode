@@ -1563,7 +1563,7 @@ Uses a fault-resilient multi-phase approach:
 
 (define-derived-mode g-mode-brlcad-mode tabulated-list-mode "BRL-CAD"
   "UI mode for browsing BRL-CAD database objects.
-  {g-mode-brlcad-mode-map}"
+\\{g-mode-brlcad-mode-map}"
   (setq tabulated-list-format [("#" 4 t)
                                ("Name" 30 t)
                                ("Type" 25 t)
