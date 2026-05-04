@@ -5,18 +5,23 @@
 ;; Author: Christopher Sean Morrison
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "28.1"))
-;; Keywords: data, files, tools, bin, brl-cad
+;; Keywords: data, files, tools
 ;; SPDX-License-Identifier: MIT
 ;; URL: https://github.com/brlcad/g-mode
 
 ;;; Commentary:
 
 ;; A major mode for inspecting, browsing, and editing BRL-CAD `.g`
-;; binary database files natively.
+;; binary database files natively.  Opening a `.g` file presents a
+;; searchable, sortable table of database records.  From there you
+;; can inspect object properties, rename objects, delete objects,
+;; reorder objects, compact the file, and recover from certain
+;; corruption conditions — all without leaving Emacs and without
+;; requiring a BRL-CAD installation.
 
 ;; It requires Emacs 28.1+ to leverage the modern `bindat` API.  This
-;; mode implements its own file handling standalone, without relying
-;; on BRL-CAD libraries.
+;; mode implements its own binary parser in pure Emacs Lisp, without
+;; relying on external BRL-CAD libraries.
 
 ;;; Code:
 
@@ -26,19 +31,19 @@
 (require 'tabulated-list)
 (require 'subr-x)
 
-(defgroup g-mode nil
+(defgroup g-brlcad nil
   "Major mode for reading and editing BRL-CAD .g geometry database files."
   :group 'data)
 
 (defface g-mode-deleted-face
   '((t :inherit shadow :strike-through t))
   "Face for deleted (Free Space) objects in the tabulated list."
-  :group 'g-mode)
+  :group 'g-brlcad)
 
 (defface g-mode-corrupt-face
   '((t :inherit error :weight bold))
   "Face for corrupt or unparseable regions in the tabulated list."
-  :group 'g-mode)
+  :group 'g-brlcad)
 
 (defconst g-mode-magic1 #x76 "First magic number byte for a database object.")
 (defconst g-mode-magic2 #x35 "Last magic number byte for a database object.")
@@ -716,16 +721,16 @@ Returns an alist of (KEY . VALUE) strings, or nil."
     (setq tabulated-list-entries (nreverse entries))))
 
 (defvar-local g-mode--inspector-source-buffer nil
-  "The `g-mode-ui-mode' buffer that owns the current inspector.")
+  "The `g-mode-brlcad-mode' buffer that owns the current inspector.")
 
 (defvar-local g-mode--inspector-record-id nil
   "The current record ID shown in the inspector.")
 
-(define-derived-mode g-mode-inspector-mode special-mode "BRL-CAD Object"
-  "Inspector buffer for database objects and recovery actions.")
+(define-derived-mode g-mode-object-mode special-mode "BRL-CAD Object"
+  "Inspection buffer for database objects and recovery actions.")
 
 (defun g-mode--lookup-record (id)
-  "Look up record ID in the current `g-mode-ui-mode' buffer."
+  "Look up record ID in the current `g-mode-brlcad-mode' buffer."
   (cond
    ((eq id :header) g-mode--header-info)
    (t (cl-find id g-mode--objects :key (lambda (o) (cdr (assq 'pos o)))))))
@@ -1029,7 +1034,7 @@ Returns an alist of (KEY . VALUE) strings, or nil."
                      (if (eq id :header) "header" "unnamed")))
            (buf-name (format "*g-mode: %s*" name)))
       (with-current-buffer (get-buffer-create buf-name)
-        (g-mode-inspector-mode)
+        (g-mode-object-mode)
         (setq g-mode--inspector-source-buffer ui-buf)
         (setq g-mode--inspector-record-id id)
         (g-mode--inspector-refresh)
@@ -1513,7 +1518,7 @@ Uses a fault-resilient multi-phase approach:
       (when focus-obj
         (g-mode--goto-record (cdr (assq 'pos focus-obj)))))))
 
-(defvar g-mode-ui-mode-map
+(defvar g-mode-brlcad-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "m") 'g-mode-mark)
     (define-key map (kbd "u") 'g-mode-unmark)
@@ -1548,7 +1553,7 @@ Uses a fault-resilient multi-phase approach:
     (define-key map (kbd "?") 'g-mode-help)
     (define-key map (kbd "q") 'quit-window)
     map)
-  "Keymap for `g-mode-ui-mode'.")
+  "Keymap for `g-mode-brlcad-mode'.")
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.g\\'" . g-mode))
@@ -1556,9 +1561,9 @@ Uses a fault-resilient multi-phase approach:
 ;;;###autoload
 (add-to-list 'file-coding-system-alist '("\\.g\\'" . no-conversion))
 
-(define-derived-mode g-mode-ui-mode tabulated-list-mode "BRL-CAD"
+(define-derived-mode g-mode-brlcad-mode tabulated-list-mode "BRL-CAD"
   "UI mode for browsing BRL-CAD database objects.
-\\{g-mode-ui-mode-map}"
+  {g-mode-brlcad-mode-map}"
   (setq tabulated-list-format [("#" 4 t)
                                ("Name" 30 t)
                                ("Type" 25 t)
@@ -1643,7 +1648,7 @@ Maintains a hidden binary buffer and uses the current buffer as the UI."
       (buffer-disable-undo)
       (buffer-enable-undo))
     (set-buffer-multibyte t)
-    (g-mode-ui-mode)
+    (g-mode-brlcad-mode)
     (setq g-mode--binary-buffer bin-buf)
     (add-hook 'write-contents-functions #'g-mode--write-contents nil t)
     (add-hook 'kill-buffer-hook #'g-mode--kill-binary-buffer nil t)
