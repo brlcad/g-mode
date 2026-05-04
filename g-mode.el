@@ -586,27 +586,22 @@ Returns an alist of (KEY . VALUE) strings, or nil."
 (defvar-local g-mode--objects nil
   "List of parsed objects from the binary database.")
 
-
 (defun g-mode--add-marker (pos list-var)
-  "Add a marker at POS in binary buffer to the list named by LIST-VAR."
-  (unless (cl-find pos (symbol-value list-var) :test #'=)
-    (let ((m (make-marker)))
-      (set-marker-insertion-type m t)
-      (set-marker m pos g-mode--binary-buffer)
-      (set list-var (cons m (symbol-value list-var))))))
+  "Add a text property at POS in binary buffer to simulate marking."
+  (with-current-buffer g-mode--binary-buffer
+    (let ((inhibit-read-only t))
+      (put-text-property pos (1+ pos) list-var t)))
+  (g-mode--sync-markers-from-properties))
 
 (defvar-local g-mode--saved-disk-hash nil
   "MD5 hash of the binary buffer at the last save point.")
 
 (defun g-mode--remove-marker (pos list-var)
-  "Remove any marker matching POS from the list named by LIST-VAR."
-  (let* ((lst (symbol-value list-var))
-         (to-remove (cl-remove-if-not (lambda (m) (and (marker-position m) (= m pos))) lst)))
-    (set list-var (cl-remove pos lst :test (lambda (a b) (and (or (integerp a) (marker-position a))
-                                                              (or (integerp b) (marker-position b))
-                                                              (= a b)))))
-    (dolist (m to-remove)
-      (set-marker m nil))))
+  "Remove text property at POS in binary buffer."
+  (with-current-buffer g-mode--binary-buffer
+    (let ((inhibit-read-only t))
+      (remove-text-properties pos (1+ pos) (list list-var nil))))
+  (g-mode--sync-markers-from-properties))
 
 (defvar-local g-mode-filter-regexp nil
   "Regular expression to filter objects by name. If nil, show all.")
@@ -641,6 +636,7 @@ Returns an alist of (KEY . VALUE) strings, or nil."
 
 (defun g-mode--update-ui ()
   "Refresh entries, print the UI, and restore visual marks."
+  (g-mode--sync-markers-from-properties)
   (g-mode--refresh-entries)
   (let ((max-name-len 4)
         (max-type-len 4)
@@ -682,6 +678,27 @@ Returns an alist of (KEY . VALUE) strings, or nil."
           (when (and (integerp id) (cl-find id g-mode--marked-objects :test #'=))
             (tabulated-list-put-tag "*")))
         (forward-line 1)))))
+
+(defun g-mode--sync-markers-from-properties ()
+  "Rebuild marker lists from text properties."
+  (let ((marked nil)
+        (deleted nil))
+    (with-current-buffer g-mode--binary-buffer
+      (let ((pos (point-min)))
+        ;; Check point-min itself
+        (when (get-text-property pos 'g-mode--marked-objects) (push pos marked))
+        (when (get-text-property pos 'g-mode--session-deleted-objects) (push pos deleted))
+        ;; Scan rest
+        (while (and pos (< pos (point-max)))
+          (let ((next-pos (next-property-change pos)))
+            (setq pos next-pos)
+            (when (and pos (< pos (point-max)))
+              (when (get-text-property pos 'g-mode--marked-objects)
+                (unless (memq pos marked) (push pos marked)))
+              (when (get-text-property pos 'g-mode--session-deleted-objects)
+                (unless (memq pos deleted) (push pos deleted))))))))
+    (setq g-mode--marked-objects (nreverse marked))
+    (setq g-mode--session-deleted-objects (nreverse deleted))))
 
 (defun g-mode--refresh-entries ()
   "Populate `tabulated-list-entries' from the binary buffer."
@@ -1187,7 +1204,7 @@ The new record preserves OBJ's type, flags, and interior data."
 
 (defun g-mode--get-targets ()
   "Return list of marked object IDs in order, or just the ID at point if none."
-  (or (and g-mode--marked-objects (mapcar #'marker-position (reverse g-mode--marked-objects)))
+  (or (and g-mode--marked-objects (reverse g-mode--marked-objects))
       (let ((id (tabulated-list-get-id)))
         (if (integerp id) (list id) nil))))
 
@@ -1229,14 +1246,14 @@ The new record preserves OBJ's type, flags, and interior data."
 (defun g-mode-unmark-all-marks ()
   "Clear all marks. Undeletes any objects soft-deleted in this session."
   (interactive)
-  (progn (mapc (lambda (m) (set-marker m nil)) g-mode--marked-objects) (setq g-mode--marked-objects nil))
+  (progn (setq g-mode--marked-objects nil) (with-current-buffer g-mode--binary-buffer (let ((inhibit-read-only t)) (remove-text-properties (point-min) (point-max) '(g-mode--marked-objects nil)))))
   (let ((undeleted 0))
     (dolist (id g-mode--session-deleted-objects)
       (let* ((obj (cl-find id g-mode--objects :key (lambda (o) (cdr (assq 'pos o))))))
         (when (and obj (= (logand (cdr (assq 'hflags obj)) #x03) 2))
           (g-mode--set-dli-at id g-mode--binary-buffer 0)
           (cl-incf undeleted))))
-    (progn (mapc (lambda (m) (set-marker m nil)) g-mode--session-deleted-objects) (setq g-mode--session-deleted-objects nil))
+    (progn (setq g-mode--session-deleted-objects nil) (with-current-buffer g-mode--binary-buffer (let ((inhibit-read-only t)) (remove-text-properties (point-min) (point-max) '(g-mode--session-deleted-objects nil)))))
     (g-mode--update-ui)
     (message "Cleared all marks%s" 
              (if (> undeleted 0) (format " and undeleted %d objects." undeleted) "."))))
@@ -1252,7 +1269,7 @@ The new record preserves OBJ's type, flags, and interior data."
           (when (and (integerp id) (not (cl-find id g-mode--marked-objects :test #'=)))
             (push id new-marks)))
         (forward-line 1)))
-    (progn (progn (mapc (lambda (m) (set-marker m nil)) g-mode--marked-objects) (setq g-mode--marked-objects nil)) (dolist (m (nreverse new-marks)) (g-mode--add-marker m 'g-mode--marked-objects)))
+    (progn (progn (setq g-mode--marked-objects nil) (with-current-buffer g-mode--binary-buffer (let ((inhibit-read-only t)) (remove-text-properties (point-min) (point-max) '(g-mode--marked-objects nil))))) (dolist (m (nreverse new-marks)) (g-mode--add-marker m 'g-mode--marked-objects)))
     (g-mode--update-ui)))
 
 (defun g-mode-mark-regexp (regexp)
@@ -1295,8 +1312,8 @@ The new record preserves OBJ's type, flags, and interior data."
           (set-buffer-modified-p nil)
           (buffer-disable-undo)
           (buffer-enable-undo)))
-      (progn (mapc (lambda (m) (set-marker m nil)) g-mode--marked-objects) (setq g-mode--marked-objects nil))
-      (progn (mapc (lambda (m) (set-marker m nil)) g-mode--session-deleted-objects) (setq g-mode--session-deleted-objects nil))
+      (progn (setq g-mode--marked-objects nil) (with-current-buffer g-mode--binary-buffer (let ((inhibit-read-only t)) (remove-text-properties (point-min) (point-max) '(g-mode--marked-objects nil)))))
+      (progn (setq g-mode--session-deleted-objects nil) (with-current-buffer g-mode--binary-buffer (let ((inhibit-read-only t)) (remove-text-properties (point-min) (point-max) '(g-mode--session-deleted-objects nil)))))
       (set-buffer-modified-p nil)
       (g-mode--update-ui)
       (message "Reverted database from disk."))))
@@ -1361,7 +1378,7 @@ rename in-place. If longer, append a new copy and mark old as Free Space."
                         (setq g-mode--objects (append g-mode--objects (list new-obj)))))
                   (message "Renamed '%s' to '%s'." old-name new-name)))))))))
     (with-current-buffer bin-buf (setq g-mode--expected-tick (buffer-chars-modified-tick)))
-    (progn (mapc (lambda (m) (set-marker m nil)) g-mode--marked-objects) (setq g-mode--marked-objects nil))
+    (progn (setq g-mode--marked-objects nil) (with-current-buffer g-mode--binary-buffer (let ((inhibit-read-only t)) (remove-text-properties (point-min) (point-max) '(g-mode--marked-objects nil)))))
     (g-mode--update-ui)))
 
 (defun g-mode-copy-object ()
@@ -1381,7 +1398,7 @@ rename in-place. If longer, append a new copy and mark old as Free Space."
               
               (g-mode--append-object-copy obj new-name bin-buf)
               (message "Copied '%s' to '%s'." old-name new-name))))))
-    (progn (mapc (lambda (m) (set-marker m nil)) g-mode--marked-objects) (setq g-mode--marked-objects nil))
+    (progn (setq g-mode--marked-objects nil) (with-current-buffer g-mode--binary-buffer (let ((inhibit-read-only t)) (remove-text-properties (point-min) (point-max) '(g-mode--marked-objects nil)))))
     (g-mode--update-ui)))
 
 ;;;; Database Compaction (GC)
@@ -1470,27 +1487,17 @@ Uses a fault-resilient multi-phase approach:
          (b-marked (cl-find pos-b g-mode--marked-objects :test #'=))
          (a-deleted (cl-find pos-a g-mode--session-deleted-objects :test #'=))
          (b-deleted (cl-find pos-b g-mode--session-deleted-objects :test #'=)))
-    
-    (g-mode--remove-marker pos-a 'g-mode--marked-objects)
-    (g-mode--remove-marker pos-b 'g-mode--marked-objects)
-    (g-mode--remove-marker pos-a 'g-mode--session-deleted-objects)
-    (g-mode--remove-marker pos-b 'g-mode--session-deleted-objects)
 
     (with-current-buffer bin-buf
       (let ((inhibit-read-only t))
-        (let ((data-a (buffer-substring-no-properties pos-a (+ pos-a len-a))))
+        (let ((data-a (buffer-substring pos-a (+ pos-a len-a))))
           (delete-region pos-a (+ pos-a len-a))
           (goto-char (+ pos-a len-b))
           (insert data-a))))
     
     (let* ((new-pos-b pos-a)
            (new-pos-a (+ pos-a len-b)))
-      
-      (when a-marked (g-mode--add-marker new-pos-a 'g-mode--marked-objects))
-      (when b-marked (g-mode--add-marker new-pos-b 'g-mode--marked-objects))
-      (when a-deleted (g-mode--add-marker new-pos-a 'g-mode--session-deleted-objects))
-      (when b-deleted (g-mode--add-marker new-pos-b 'g-mode--session-deleted-objects))
-      
+
       (setcdr (assq 'pos obj-a) new-pos-a)
       (setcdr (assq 'interior-pos obj-a) (+ new-pos-a (- (cdr (assq 'interior-pos obj-a)) pos-a)))
       (setcdr (assq 'pos obj-b) new-pos-b)
