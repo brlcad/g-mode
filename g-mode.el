@@ -594,6 +594,9 @@ Returns an alist of (KEY . VALUE) strings, or nil."
       (set-marker m pos g-mode--binary-buffer)
       (set list-var (cons m (symbol-value list-var))))))
 
+(defvar-local g-mode--saved-disk-hash nil
+  "MD5 hash of the binary buffer at the last save point.")
+
 (defun g-mode--remove-marker (pos list-var)
   "Remove any marker matching POS from the list named by LIST-VAR."
   (let* ((lst (symbol-value list-var))
@@ -662,6 +665,13 @@ Returns an alist of (KEY . VALUE) strings, or nil."
     (tabulated-list-init-header))
   (tabulated-list-print t)
   (when (buffer-live-p g-mode--binary-buffer)
+    (with-current-buffer g-mode--binary-buffer
+      ;; If Emacs thinks the buffer is unmodified (e.g. we undid to a previous clean state),
+      ;; verify the content actually matches the last saved state.
+      (when (and (not (buffer-modified-p))
+                 g-mode--saved-disk-hash
+                 (not (equal (secure-hash 'md5 (current-buffer)) g-mode--saved-disk-hash)))
+        (set-buffer-modified-p t)))
     (set-buffer-modified-p (buffer-modified-p g-mode--binary-buffer)))
   (save-excursion
     (goto-char (point-min))
@@ -1603,7 +1613,9 @@ Uses a fault-resilient multi-phase approach:
         (error "Binary buffer is no longer live")
       (with-current-buffer g-mode--binary-buffer
         ;; Use 'quiet to avoid changing the binary buffer's visited file or spamming messages
-        (write-region (point-min) (point-max) file nil 'quiet)))
+        (write-region (point-min) (point-max) file nil 'quiet)
+        (setq g-mode--saved-disk-hash (secure-hash 'md5 (current-buffer)))
+        (set-buffer-modified-p nil)))
     (set-visited-file-modtime)
     (set-buffer-modified-p nil)
     (message "Database saved.")
@@ -1672,6 +1684,7 @@ Maintains a hidden binary buffer and uses the current buffer as the UI."
     (set-buffer-multibyte t)
     (g-mode-brlcad-mode)
     (setq g-mode--binary-buffer bin-buf)
+    (setq g-mode--saved-disk-hash (with-current-buffer bin-buf (secure-hash 'md5 (current-buffer))))
     (add-hook 'write-contents-functions #'g-mode--write-contents nil t)
     (add-hook 'kill-buffer-hook #'g-mode--kill-binary-buffer nil t)
     (auto-save-mode -1)

@@ -30,6 +30,7 @@
 ;; `g-mode-gc-interleaved-test`  | GC compacts non-contiguous deletions
 ;; `g-mode-copy-long-name-test`  | Copy w/ name requiring wider width prefix
 ;; `g-mode-revert-after-mutations-test` | Revert restores original state
+;; `g-mode-save-undo-sync-test`  | Save-Undo sync keeps modified-p correctly
 
 ;;; Code:
 
@@ -608,6 +609,42 @@
       (should-not (cl-find "all_renamed_longer" g-mode--objects
                            :key (lambda (o) (cdr (assq 'name o))) :test 'equal)))))
 
+(ert-deftest g-mode-save-undo-sync-test ()
+  "Test that saving then undoing back to original state keeps the buffer modified."
+  (let ((temp-file (make-temp-file "g-mode-test" nil ".g")))
+    (copy-file "test/moss.g" temp-file t)
+    (unwind-protect
+        (with-g-mode-test-setup temp-file
+          ;; 1. Make three changes (delete three objects)
+          ;; We use names that are active in moss.g: "platform.s", "box.s", "cone.s"
+          (let ((targets '("platform.s" "box.s" "cone.s")))
+            (dolist (name targets)
+              (goto-char (point-min))
+              (while (and (not (eobp))
+                          (let ((entry (tabulated-list-get-entry (point))))
+                            (or (null entry) (not (equal name (aref entry 1))))))
+                (forward-line 1))
+              (should-not (eobp))
+              (with-current-buffer g-mode--binary-buffer (undo-boundary))
+              (g-mode-delete-object)))
+          
+          (should (buffer-modified-p))
+          
+          ;; 2. Save the file (writes the 'three-deletions' state to disk)
+          (setq buffer-file-name temp-file)
+          (g-mode--write-contents)
+          (should-not (buffer-modified-p))
+          
+          ;; 3. Undo three times (should return to original state)
+          (g-mode-undo)
+          (g-mode-undo)
+          (g-mode-undo)
+          
+          ;; BUG: At this point, if undo returned us to the 'load point',
+          ;; Emacs might think the buffer is unmodified. But it SHOULD be
+          ;; modified because disk has State B and buffer has State A.
+          (should (buffer-modified-p)))
+      (when (file-exists-p temp-file) (delete-file temp-file)))))
 
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here
