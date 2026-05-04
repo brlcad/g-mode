@@ -1,11 +1,31 @@
 ;;; g-mode-test.el --- Tests for g-mode -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Christopher Sean Morrison
+;; SPDX-License-Identifier: MIT
 
 ;; This file is NOT part of GNU Emacs.
 
 ;;; Commentary:
 ;; Unit tests for `g-mode' parsing and functionality.
+
+;; Test                          | What it verifies
+;; ------------------------------|----------------------------------------------
+;; `g-mode-basic-test`           | Feature loads, rejects non-`.g` buffers
+;; `g-mode-parse-header-test`    | 8-byte header magic validation
+;; `g-mode-parse-object-test`    | Object wrapper parsing (Free Space + named)
+;; `g-mode-scan-buffer-test`     | Full file scan produces correct object count
+;; `g-mode-ui-test`              | Tabulated list populates correctly
+;; `g-mode-attributes-test`      | Key=value attribute extraction
+;; `g-mode-delete-undelete-test` | DLI flag toggle + binary sync
+;; `g-mode-ui-toggle-test`       | Show/hide deleted filtering
+;; `g-mode-filter-test`          | Regex filtering of the UI list
+;; `g-mode-rename-inline-test`   | In-place rename with NUL padding
+;; `g-mode-rename-append-test`   | Append new object + free original
+;; `g-mode-garbage-collect-test` | 3-phase compaction shrinks buffer
+;; `g-mode-move-up-down-test`    | Binary reordering of records
+;; `g-mode-undo-test`            | Integration of Emacs undo with binary state
+;; `g-mode-mark-unmark-test`     | UI marking persistence
+;; `g-mode-copy-test`            | Appending cloned records
 
 ;;; Code:
 
