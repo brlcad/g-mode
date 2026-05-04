@@ -61,26 +61,40 @@ directly into the binary buffer; the UI refreshes from it.
 
 ## Keybindings
 
-| Key          | Command                         | Description                              |
-|--------------|---------------------------------|------------------------------------------|
-| `v` / `RET`  | `g-mode-view-object`            | Open detailed property inspector         |
-| `o`          | `g-mode-view-object-other-window`| Open inspector in another window         |
-| `d`          | `g-mode-delete-object`          | Mark object as Free Space (DLI=2)        |
-| `R`          | `g-mode-rename-object`          | Rename object (inline or append)         |
-| `C`          | `g-mode-copy-object`            | Create a copy of the selected object     |
-| `M-up` / `M-down` | `g-mode-move-up/down`      | Reorder objects (shifts binary data)     |
-| `m`          | `g-mode-mark`                   | Mark object for multi-select operations  |
-| `u`          | `g-mode-unmark`                 | Unmark object                            |
-| `U`          | `g-mode-unmark-all-marks`       | Clear all marks                          |
-| `% m`        | `g-mode-mark-regexp`            | Mark objects matching a regex            |
-| `f` / `/`    | `g-mode-filter`                 | Filter visible objects by name/regex     |
-| `h`          | `g-mode-toggle-show-deleted`    | Toggle visibility of Free Space objects  |
-| `G` / `x`    | `g-mode-garbage-collect`        | Compact file, reclaiming deleted space   |
-| `g`          | `g-mode-revert`                 | Re-scan the database from disk           |
-| `C-_` / `C-x u`| `g-mode-undo`                  | Undo last mutation (syncs binary & UI)   |
-| `s` / `C-x C-s`| `save-buffer`                  | Save the underlying binary database      |
-| `q`          | `quit-window`                   | Close the UI buffer                      |
-| `?`          | `g-mode-help`                   | Show keybinding help                     |
+### Navigation & Inspection
+
+| Key         | Command                         | Description                              |
+|-------------|---------------------------------|------------------------------------------|
+| `v` / `RET` | `g-mode-view-object`            | Open detailed property inspector         |
+| `o`         | `g-mode-view-object-other-window`| Open inspector in another window         |
+| `f` / `/`   | `g-mode-filter`                 | Filter visible objects by name/regex     |
+| `h`         | `g-mode-toggle-show-deleted`    | Toggle visibility of Free Space objects  |
+| `g`         | `g-mode-revert`                 | Re-scan the database from disk           |
+| `q`         | `quit-window`                   | Close the UI buffer                      |
+| `?`         | `g-mode-help`                   | Show keybinding help                     |
+
+### Modification, Reordering & Maintenance
+
+| Key         | Command                         | Description                              |
+|-------------|---------------------------------|------------------------------------------|
+| `d`         | `g-mode-delete-object`          | Mark object as Free Space (DLI=2)        |
+| `R`         | `g-mode-rename-object`          | Rename object (inline or append)         |
+| `C`         | `g-mode-copy-object`            | Create a copy of the selected object     |
+| `M-up`      | `g-mode-move-up`                | Shift record up in the binary layout     |
+| `M-down`    | `g-mode-move-down`              | Shift record down in the binary layout   |
+| `G` / `x`   | `g-mode-garbage-collect`        | Compact file, reclaiming deleted space   |
+| `C-_`       | `g-mode-undo`                   | Undo last mutation (syncs binary & UI)   |
+| `s`         | `save-buffer`                   | Save the underlying binary database      |
+
+### Marking (Multi-Select)
+
+| Key         | Command                         | Description                              |
+|-------------|---------------------------------|------------------------------------------|
+| `m`         | `g-mode-mark`                   | Mark object for batch operations         |
+| `u`         | `g-mode-unmark`                 | Unmark object                            |
+| `U`         | `g-mode-unmark-all-marks`       | Clear all marks                          |
+| `% m`       | `g-mode-mark-regexp`            | Mark objects matching a regex            |
+| `t`         | `g-mode-toggle-marks`           | Invert all marks                         |
 
 ## Features
 

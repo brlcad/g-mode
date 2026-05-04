@@ -1630,7 +1630,41 @@ Uses a fault-resilient multi-phase approach:
     (kill-buffer g-mode--binary-buffer)))
 
 (defun g-mode-help ()
-  (message "v:view d:del m:mark u/U:unmk x:gc C:copy C-_:undo g:rev ?:help"))
+  "Display g-mode keybindings grouped by function."
+  (interactive)
+  (with-help-window "*g-mode help*"
+    (with-current-buffer standard-output
+      (insert "g-mode Keybindings\n")
+      (insert "==================\n\n")
+
+      (insert "Navigation & Inspection\n")
+      (insert "-----------------------\n")
+      (insert "v, RET  View object properties\n")
+      (insert "o       View in other window\n")
+      (insert "f, /    Filter by name/regex\n")
+      (insert "h       Toggle show deleted\n")
+      (insert "g       Re-scan database\n")
+      (insert "q       Quit UI\n")
+      (insert "?       Show this help\n\n")
+
+      (insert "Modification, Reordering & Maintenance\n")
+      (insert "--------------------------------------\n")
+      (insert "d       Delete object\n")
+      (insert "R       Rename object\n")
+      (insert "C       Copy object\n")
+      (insert "M-up    Move record up\n")
+      (insert "M-down  Move record down\n")
+      (insert "G, x    Garbage collect (compact)\n")
+      (insert "C-_     Undo mutation\n")
+      (insert "s       Save database\n\n")
+
+      (insert "Marking (Multi-Select)\n")
+      (insert "----------------------\n")
+      (insert "m       Mark object\n")
+      (insert "u       Unmark object\n")
+      (insert "U       Unmark all\n")
+      (insert "% m     Mark by regex\n")
+      (insert "t       Toggle marks\n"))))
 
 (defun g-mode ()
   "Major mode wrapper for BRL-CAD .g files.
