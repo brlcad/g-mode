@@ -26,6 +26,10 @@
 ;; `g-mode-undo-test`            | Integration of Emacs undo with binary state
 ;; `g-mode-mark-unmark-test`     | UI marking persistence
 ;; `g-mode-copy-test`            | Appending cloned records
+;; `g-mode-rename-exact-length-test` | Same-length rename uses inline path
+;; `g-mode-gc-interleaved-test`  | GC compacts non-contiguous deletions
+;; `g-mode-copy-long-name-test`  | Copy w/ name requiring wider width prefix
+;; `g-mode-revert-after-mutations-test` | Revert restores original state
 
 ;;; Code:
 
@@ -458,6 +462,152 @@
         (when (buffer-live-p ui-buf) (with-current-buffer ui-buf (setq buffer-read-only nil)))
         (when (buffer-live-p ui-buf) (kill-buffer ui-buf))
         (when (buffer-live-p bin-buf) (with-current-buffer bin-buf (setq buffer-read-only nil)))))))
+
+(ert-deftest g-mode-rename-exact-length-test ()
+  "Rename to a name of exactly the same byte-length uses the inline path."
+  (with-g-mode-test-setup "test/moss.g"
+    (let ((orig-count (length g-mode--objects)))
+      ;; Navigate to "tor" (3 chars + NUL = 4 bytes)
+      (goto-char (point-min))
+      (while (and (not (eobp))
+                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 1))))
+        (forward-line 1))
+      (should-not (eobp))
+      ;; Rename to "abc" — same byte-length, should use inline path
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "abc")))
+        (g-mode-rename-object))
+      ;; The new name should appear in the objects list
+      (should (cl-find "abc" g-mode--objects
+                       :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+      ;; No new object should have been appended (inline path)
+      (should (= (length g-mode--objects) orig-count))
+      ;; The old name should be gone
+      (should-not (cl-find "tor" g-mode--objects
+                           :key (lambda (o) (cdr (assq 'name o))) :test 'equal)))))
+
+(ert-deftest g-mode-gc-interleaved-test ()
+  "GC compaction handles non-contiguous deleted objects correctly."
+  (with-g-mode-test-setup "test/moss.g"
+    (let ((original-size (with-current-buffer g-mode--binary-buffer (buffer-size))))
+      ;; Delete first object ("tor" at index 0)
+      (goto-char (point-min))
+      (while (and (not (eobp))
+                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 1))))
+        (forward-line 1))
+      (should-not (eobp))
+      (g-mode-delete-object)
+
+      ;; Delete a non-adjacent object ("ellipse.s")
+      (goto-char (point-min))
+      (while (and (not (eobp))
+                  (let ((entry (tabulated-list-get-entry (point))))
+                    (or (null entry) (not (equal "ellipse.s" (aref entry 1))))))
+        (forward-line 1))
+      (should-not (eobp))
+      (g-mode-delete-object)
+
+      ;; Count active objects before GC
+      (let ((pre-gc-active (cl-count-if
+                            (lambda (o)
+                              (not (or (cdr (assq 'corrupt o))
+                                       (= (logand (cdr (assq 'hflags o)) #x03) 2))))
+                            g-mode--objects)))
+
+        ;; Run GC
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+          (g-mode-garbage-collect))
+
+        ;; Buffer should have shrunk
+        (should (< (with-current-buffer g-mode--binary-buffer (buffer-size))
+                   original-size))
+
+        ;; Both deleted objects should be gone
+        (should-not (cl-find "tor" g-mode--objects
+                             :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+        (should-not (cl-find "ellipse.s" g-mode--objects
+                             :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+
+        ;; Active count preserved
+        (should (= (length g-mode--objects) pre-gc-active))
+
+        ;; Remaining objects are still parseable
+        (should (cl-find "_GLOBAL" g-mode--objects
+                         :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+        (should (cl-find "all.g" g-mode--objects
+                         :key (lambda (o) (cdr (assq 'name o))) :test 'equal))))))
+
+(ert-deftest g-mode-copy-long-name-test ()
+  "Copy with a very long name that requires a wider nlen width prefix."
+  (with-g-mode-test-setup "test/moss.g"
+    (let ((orig-count (length g-mode--objects))
+          ;; 260 chars forces nlen > 255, bumping nlen-bytes from 1 to 2
+          (long-name (make-string 260 ?x)))
+      (goto-char (point-min))
+      (while (and (not (eobp))
+                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 1))))
+        (forward-line 1))
+      (should-not (eobp))
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) long-name)))
+        (g-mode-copy-object))
+      ;; The new object should exist with the full long name
+      (should (cl-find long-name g-mode--objects
+                       :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+      ;; Original still present
+      (should (cl-find "tor" g-mode--objects
+                       :key (lambda (o) (cdr (assq 'name o))) :test 'equal))
+      ;; Object count increased by 1
+      (should (= (length g-mode--objects) (1+ orig-count)))
+      ;; The new record should be valid (re-parseable)
+      (let ((new-obj (cl-find long-name g-mode--objects
+                              :key (lambda (o) (cdr (assq 'name o))) :test 'equal)))
+        (should (> (cdr (assq 'length new-obj)) 0))
+        (should-not (cdr (assq 'corrupt new-obj)))))))
+
+(ert-deftest g-mode-revert-after-mutations-test ()
+  "Revert-buffer after mutations restores the original database state."
+  (with-g-mode-test-setup "test/moss.g"
+    (let ((orig-count (length g-mode--objects))
+          (orig-size (with-current-buffer g-mode--binary-buffer (buffer-size))))
+      ;; Mutate: delete an object
+      (goto-char (point-min))
+      (while (and (not (eobp))
+                  (not (equal "tor" (aref (tabulated-list-get-entry (point)) 1))))
+        (forward-line 1))
+      (should-not (eobp))
+      (g-mode-delete-object)
+
+      ;; Mutate: rename another object (append path)
+      (goto-char (point-min))
+      (while (and (not (eobp))
+                  (let ((entry (tabulated-list-get-entry (point))))
+                    (or (null entry) (not (equal "all.g" (aref entry 1))))))
+        (forward-line 1))
+      (should-not (eobp))
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "all_renamed_longer")))
+        (g-mode-rename-object))
+
+      ;; State should be mutated
+      (should-not (= (length g-mode--objects) orig-count))
+
+      ;; Set buffer-file-name so revert can re-read from disk
+      (setq buffer-file-name (expand-file-name "test/moss.g"))
+      ;; Revert (auto-confirm discard)
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+        (g-mode-revert))
+
+      ;; After revert: original object count restored
+      (should (= (length g-mode--objects) orig-count))
+      ;; Binary buffer size restored
+      (should (= (with-current-buffer g-mode--binary-buffer (buffer-size)) orig-size))
+      ;; "tor" should be back as a live (non-deleted) object
+      (let ((tor (cl-find "tor" g-mode--objects
+                          :key (lambda (o) (cdr (assq 'name o))) :test 'equal)))
+        (should tor)
+        (should-not (= (logand (cdr (assq 'hflags tor)) #x03) 2)))
+      ;; The append-rename artefact should be gone
+      (should-not (cl-find "all_renamed_longer" g-mode--objects
+                           :key (lambda (o) (cdr (assq 'name o))) :test 'equal)))))
+
 
 (provide 'g-mode-test)
 ;;; g-mode-test.el ends here
