@@ -591,6 +591,7 @@ Returns an alist of (KEY . VALUE) strings, or nil."
   "Add a marker at POS in binary buffer to the list named by LIST-VAR."
   (unless (cl-find pos (symbol-value list-var) :test #'=)
     (let ((m (make-marker)))
+      (set-marker-insertion-type m t)
       (set-marker m pos g-mode--binary-buffer)
       (set list-var (cons m (symbol-value list-var))))))
 
@@ -1464,7 +1465,17 @@ Uses a fault-resilient multi-phase approach:
          (len-a (cdr (assq 'length obj-a)))
          (pos-b (cdr (assq 'pos obj-b)))
          (len-b (cdr (assq 'length obj-b)))
-         (bin-buf g-mode--binary-buffer))
+         (bin-buf g-mode--binary-buffer)
+         (a-marked (cl-find pos-a g-mode--marked-objects :test #'=))
+         (b-marked (cl-find pos-b g-mode--marked-objects :test #'=))
+         (a-deleted (cl-find pos-a g-mode--session-deleted-objects :test #'=))
+         (b-deleted (cl-find pos-b g-mode--session-deleted-objects :test #'=)))
+    
+    (g-mode--remove-marker pos-a 'g-mode--marked-objects)
+    (g-mode--remove-marker pos-b 'g-mode--marked-objects)
+    (g-mode--remove-marker pos-a 'g-mode--session-deleted-objects)
+    (g-mode--remove-marker pos-b 'g-mode--session-deleted-objects)
+
     (with-current-buffer bin-buf
       (let ((inhibit-read-only t))
         (let ((data-a (buffer-substring-no-properties pos-a (+ pos-a len-a))))
@@ -1473,15 +1484,8 @@ Uses a fault-resilient multi-phase approach:
           (insert data-a))))
     
     (let* ((new-pos-b pos-a)
-           (new-pos-a (+ pos-a len-b))
-           (a-marked (cl-find pos-a g-mode--marked-objects :test #'=))
-           (b-marked (cl-find pos-b g-mode--marked-objects :test #'=))
-           (a-deleted (cl-find pos-a g-mode--session-deleted-objects :test #'=))
-           (b-deleted (cl-find pos-b g-mode--session-deleted-objects :test #'=)))
-      (g-mode--remove-marker pos-a 'g-mode--marked-objects)
-      (g-mode--remove-marker pos-b 'g-mode--marked-objects)
-      (g-mode--remove-marker pos-a 'g-mode--session-deleted-objects)
-      (g-mode--remove-marker pos-b 'g-mode--session-deleted-objects)
+           (new-pos-a (+ pos-a len-b)))
+      
       (when a-marked (g-mode--add-marker new-pos-a 'g-mode--marked-objects))
       (when b-marked (g-mode--add-marker new-pos-b 'g-mode--marked-objects))
       (when a-deleted (g-mode--add-marker new-pos-a 'g-mode--session-deleted-objects))

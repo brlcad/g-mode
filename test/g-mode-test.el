@@ -309,67 +309,155 @@
 (ert-deftest g-mode-move-up-down-test ()
   "Test moving objects up and down."
   (with-g-mode-test-setup "test/moss.g"
-                          (let* ((nameA (cdr (assq 'name (nth 0 g-mode--objects))))
-                                 (nameB (cdr (assq 'name (nth 1 g-mode--objects))))
-                                 (nameC (cdr (assq 'name (nth 2 g-mode--objects))))
-                                 (nameD (cdr (assq 'name (nth 3 g-mode--objects))))
-                                 (nameE (cdr (assq 'name (nth 4 g-mode--objects)))))
-                            
-                            (g-mode--goto-record (cdr (assq 'pos (nth 0 g-mode--objects))))
-                            
-                            ;; 1. Move A UP -> Should be blocked because it's at index 0
-                            (g-mode-move-up)
-                            (should (equal (cdr (assq 'name (nth 0 g-mode--objects))) nameA))
-                            
-                            ;; 2. Move A DOWN by 1
-                            (g-mode-move-down)
-                            (should (equal (cdr (assq 'name (nth 0 g-mode--objects))) nameB))
-                            (should (equal (cdr (assq 'name (nth 1 g-mode--objects))) nameA))
-                            
-                            ;; 3. Move A DOWN by 3 more
-                            (g-mode-unmark-all-marks)
-                            (g-mode--goto-record (cdr (assq 'pos (nth 1 g-mode--objects)))) ;; A is at 1
-                            (g-mode-mark)
-                            (g-mode-move-down)
-                            (g-mode-move-down)
-                            (g-mode-move-down)
-                            (should (equal (cdr (assq 'name (nth 4 g-mode--objects))) nameA))
-                            
-                            ;; Now order is B, C, D, E, A
-                            ;; 4. Move E UP by 1 (E is at index 3)
-                            (g-mode-unmark-all-marks)
-                            (should (equal (cdr (assq 'name (nth 3 g-mode--objects))) nameE))
-                            (g-mode--goto-record (cdr (assq 'pos (nth 3 g-mode--objects))))
-                            (g-mode-mark)
-                            (g-mode-move-up)
-                            (should (equal (cdr (assq 'name (nth 2 g-mode--objects))) nameE))
-                            
-                            ;; Now order is B, C, E, D, A
-                            ;; 5. Test multi-object mark move
-                            (g-mode-unmark-all-marks)
-                            (g-mode--goto-record (cdr (assq 'pos (nth 0 g-mode--objects)))) ;; B
-                            (g-mode-mark)
-                            (g-mode--goto-record (cdr (assq 'pos (nth 1 g-mode--objects)))) ;; C
-                            (g-mode-mark)
-                            
-                            ;; Move them DOWN
-                            (g-mode-move-down)
-                            
-                            ;; Order becomes E, B, C, D, A
-                            (should (equal (cdr (assq 'name (nth 0 g-mode--objects))) nameE))
-                            (should (equal (cdr (assq 'name (nth 1 g-mode--objects))) nameB))
-                            (should (equal (cdr (assq 'name (nth 2 g-mode--objects))) nameC))
-                            
-                            ;; Move out of bounds test
-                            (g-mode-unmark-all-marks)
-                            (let* ((last-idx (1- (length g-mode--objects)))
-                                   (last-name (cdr (assq 'name (nth last-idx g-mode--objects)))))
-                              (g-mode--goto-record (cdr (assq 'pos (nth last-idx g-mode--objects))))
-                              (g-mode-move-down) ;; should do nothing
-                              (should (equal (cdr (assq 'name (nth (1- (length g-mode--objects)) g-mode--objects))) last-name)))
-                            
-                            (with-current-buffer g-mode--binary-buffer
-                              (should (buffer-modified-p))))))
+    (let* ((nameA (cdr (assq 'name (nth 0 g-mode--objects))))
+           (nameB (cdr (assq 'name (nth 1 g-mode--objects))))
+           (nameC (cdr (assq 'name (nth 2 g-mode--objects))))
+           (nameD (cdr (assq 'name (nth 3 g-mode--objects))))
+           (nameE (cdr (assq 'name (nth 4 g-mode--objects)))))
+      
+      (g-mode--goto-record (cdr (assq 'pos (nth 0 g-mode--objects))))
+      
+      ;; 1. Move A UP -> Should be blocked because it's at index 0
+      (g-mode-move-up)
+      (should (equal (cdr (assq 'name (nth 0 g-mode--objects))) nameA))
+      
+      ;; 2. Move A DOWN by 1
+      (g-mode-move-down)
+      (should (equal (cdr (assq 'name (nth 0 g-mode--objects))) nameB))
+      (should (equal (cdr (assq 'name (nth 1 g-mode--objects))) nameA))
+      
+      ;; 3. Move A DOWN by 3 more
+      (g-mode-unmark-all-marks)
+      (g-mode--goto-record (cdr (assq 'pos (nth 1 g-mode--objects)))) ;; A is at 1
+      (g-mode-mark)
+      (g-mode-move-down)
+      (g-mode-move-down)
+      (g-mode-move-down)
+      (should (equal (cdr (assq 'name (nth 4 g-mode--objects))) nameA))
+      
+      ;; Now order is B, C, D, E, A
+      ;; 4. Move E UP by 1 (E is at index 3)
+      (g-mode-unmark-all-marks)
+      (should (equal (cdr (assq 'name (nth 3 g-mode--objects))) nameE))
+      (g-mode--goto-record (cdr (assq 'pos (nth 3 g-mode--objects))))
+      (g-mode-mark)
+      (g-mode-move-up)
+      (should (equal (cdr (assq 'name (nth 2 g-mode--objects))) nameE))
+      
+      ;; Now order is B, C, E, D, A
+      ;; 5. Test multi-object mark move
+      (g-mode-unmark-all-marks)
+      (g-mode--goto-record (cdr (assq 'pos (nth 0 g-mode--objects)))) ;; B
+      (g-mode-mark)
+      (g-mode--goto-record (cdr (assq 'pos (nth 1 g-mode--objects)))) ;; C
+      (g-mode-mark)
+      
+      ;; Move them DOWN
+      (g-mode-move-down)
+      
+      ;; Order becomes E, B, C, D, A
+      (should (equal (cdr (assq 'name (nth 0 g-mode--objects))) nameE))
+      (should (equal (cdr (assq 'name (nth 1 g-mode--objects))) nameB))
+      (should (equal (cdr (assq 'name (nth 2 g-mode--objects))) nameC))
+      
+      ;; Move out of bounds test
+      (g-mode-unmark-all-marks)
+      (let* ((last-idx (1- (length g-mode--objects)))
+             (last-name (cdr (assq 'name (nth last-idx g-mode--objects)))))
+        (g-mode--goto-record (cdr (assq 'pos (nth last-idx g-mode--objects))))
+        (g-mode-move-down) ;; should do nothing
+        (should (equal (cdr (assq 'name (nth (1- (length g-mode--objects)) g-mode--objects))) last-name)))
+      
+      ;; 6. NEW TEST: Move marked disjoint set down repeatedly
+      ;; Currently: E, B, C, D, A
+      (g-mode-unmark-all-marks)
+      (g-mode--goto-record (cdr (assq 'pos (nth 0 g-mode--objects)))) ;; E
+      (g-mode-mark)
+      (g-mode--goto-record (cdr (assq 'pos (nth 2 g-mode--objects)))) ;; C
+      (g-mode-mark)
+      ;; Targets are E and C.
+      ;; Move DOWN once. E and C both move down.
+      ;; Order: E, B, C, D, A -> B, E, D, C, A
+      (g-mode-move-down)
+      (should (equal (cdr (assq 'name (nth 0 g-mode--objects))) nameB))
+      (should (equal (cdr (assq 'name (nth 1 g-mode--objects))) nameE))
+      (should (equal (cdr (assq 'name (nth 2 g-mode--objects))) nameD))
+      (should (equal (cdr (assq 'name (nth 3 g-mode--objects))) nameC))
+      (should (equal (cdr (assq 'name (nth 4 g-mode--objects))) nameA))
+      ;; Check they are still marked!
+      (should (= 2 (length g-mode--marked-objects)))
+      
+      ;; Move DOWN again. E and C both move down.
+      ;; Order: B, E, D, C, A -> B, D, E, A, C
+      (g-mode-move-down)
+      (should (equal (cdr (assq 'name (nth 0 g-mode--objects))) nameB))
+      (should (equal (cdr (assq 'name (nth 1 g-mode--objects))) nameD))
+      (should (equal (cdr (assq 'name (nth 2 g-mode--objects))) nameE))
+      (should (equal (cdr (assq 'name (nth 3 g-mode--objects))) nameA))
+      (should (equal (cdr (assq 'name (nth 4 g-mode--objects))) nameC))
+
+      ;; 7. NEW TEST: Move same disjoint set UP repeatedly
+      ;; Order: B, D, E, A, C. Targets E, C.
+      (g-mode-move-up)
+      ;; Order: B, E, D, C, A
+      (should (equal (cdr (assq 'name (nth 0 g-mode--objects))) nameB))
+      (should (equal (cdr (assq 'name (nth 1 g-mode--objects))) nameE))
+      (should (equal (cdr (assq 'name (nth 2 g-mode--objects))) nameD))
+      (should (equal (cdr (assq 'name (nth 3 g-mode--objects))) nameC))
+      (should (equal (cdr (assq 'name (nth 4 g-mode--objects))) nameA))
+
+      (g-mode-move-up)
+      ;; Order: E, B, C, D, A
+      (should (equal (cdr (assq 'name (nth 0 g-mode--objects))) nameE))
+      (should (equal (cdr (assq 'name (nth 1 g-mode--objects))) nameB))
+      (should (equal (cdr (assq 'name (nth 2 g-mode--objects))) nameC))
+      (should (equal (cdr (assq 'name (nth 3 g-mode--objects))) nameD))
+
+      (g-mode-move-up)
+      ;; E is already at 0, cannot move. C moves up past B.
+      ;; Order: E, C, B, D, A
+      (should (equal (cdr (assq 'name (nth 0 g-mode--objects))) nameE))
+      (should (equal (cdr (assq 'name (nth 1 g-mode--objects))) nameC))
+      (should (equal (cdr (assq 'name (nth 2 g-mode--objects))) nameB))
+      (should (equal (cdr (assq 'name (nth 3 g-mode--objects))) nameD))
+
+      (g-mode-move-up)
+      ;; Both E and C are at top, cannot move. Order remains.
+      ;; Order: E, C, B, D, A
+      (should (equal (cdr (assq 'name (nth 0 g-mode--objects))) nameE))
+      (should (equal (cdr (assq 'name (nth 1 g-mode--objects))) nameC))
+
+      (with-current-buffer g-mode--binary-buffer
+        (should (buffer-modified-p))))))
+
+(ert-deftest g-mode-move-disjoint-sets-test ()
+  "Test moving disjoint marked sets up then down (User reported bug)."
+  (with-g-mode-test-setup "test/moss.g"
+    ;; Original state:
+    ;; 0: tor
+    ;; 1: ellipse.s
+    ;; 2: platform.s
+    ;; 3: box.s
+    ;; 4: cone.s
+    (g-mode-unmark-all-marks)
+    (g-mode--goto-record (cdr (assq 'pos (nth 2 g-mode--objects)))) ;; platform.s
+    (g-mode-mark)
+    (g-mode--goto-record (cdr (assq 'pos (nth 4 g-mode--objects)))) ;; cone.s
+    (g-mode-mark)
+    
+    ;; Move them up three (no longer disjoint)
+    (g-mode-move-up)
+    (g-mode-move-up)
+    (g-mode-move-up)
+    
+    ;; Now move down one
+    (g-mode-move-down)
+    
+    ;; Check they are both still marked
+    (should (= 2 (length g-mode--marked-objects)))
+
+    (with-current-buffer g-mode--binary-buffer
+      (should (buffer-modified-p)))))
 
 (ert-deftest g-mode-undo-test ()
   "Test that EMACS undo reverses file mutations and refreshes UI."
