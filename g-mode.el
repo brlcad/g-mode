@@ -31,6 +31,8 @@
 (require 'tabulated-list)
 (require 'subr-x)
 
+;;;; Customization and Faces
+
 (defgroup g-brlcad nil
   "Major mode for reading and editing BRL-CAD .g geometry database files."
   :group 'data)
@@ -45,6 +47,8 @@
   "Face for corrupt or unparseable regions in the tabulated list."
   :group 'g-brlcad)
 
+;;;; Data Structures and Constants
+
 (defconst g-mode-magic1 #x76 "First magic number byte for a database object.")
 (defconst g-mode-magic2 #x35 "Last magic number byte for a database object.")
 
@@ -58,6 +62,8 @@
     (length     u8)
     (magic2     u8))
   "Structure for the fixed 8-byte initial database header of a .g file.")
+
+;;;; Binary Utilities
 
 (defun g-mode--make-diagnostic (level code message &rest props)
   "Create a diagnostic alist with LEVEL, CODE, MESSAGE, and PROPS."
@@ -196,6 +202,8 @@ Return nil if the requested span falls outside LIMIT."
                   (valid . ,(not (g-mode--diagnostics-have-errors-p diagnostics)))
                   (diagnostics . ,(nreverse diagnostics)))
                 fields)))))
+
+;;;; Database Header and Object Parsing
 
 (defun g-mode--parse-header ()
   "Parse the 8-byte database header and return its header fields, or nil."
@@ -442,6 +450,8 @@ object candidate, not just a matching magic byte."
       (setq pos (1+ pos)))
     found))
 
+;;;; Buffer Scanning and Object Analysis
+
 (defun g-mode--scan-buffer ()
   "Scan the entire unibyte buffer for .g objects.
 Returns a list of parsed object metadata alists.
@@ -570,6 +580,8 @@ Returns an alist of (KEY . VALUE) strings, or nil."
 
 (defvar-local g-mode--header-info nil
   "Structured analysis of the database header for this UI buffer.")
+
+;;;; State Management and Markers
 
 (defvar-local g-mode--objects nil
   "List of parsed objects from the binary database.")
@@ -725,6 +737,8 @@ Returns an alist of (KEY . VALUE) strings, or nil."
 
 (defvar-local g-mode--inspector-record-id nil
   "The current record ID shown in the inspector.")
+
+;;;; Object Inspector (UI)
 
 (define-derived-mode g-mode-object-mode special-mode "BRL-CAD Object"
   "Inspection buffer for database objects and recovery actions.")
@@ -1048,6 +1062,8 @@ Returns an alist of (KEY . VALUE) strings, or nil."
       (delete-char 1)
       (insert byte))))
 
+;;;; Object Mutation Helpers
+
 (defun g-mode--set-dli-at (pos bin-buf dli)
   "Set DLI bits for object at POS in BIN-BUF to DLI (0, 1, or 2).
 This implements a non-destructive `soft' status change that only
@@ -1163,6 +1179,8 @@ The new record preserves OBJ's type, flags, and interior data."
   (or (and g-mode--marked-objects (mapcar #'marker-position (reverse g-mode--marked-objects)))
       (let ((id (tabulated-list-get-id)))
         (if (integerp id) (list id) nil))))
+
+;;;; Browser Interaction Commands
 
 (defun g-mode-mark ()
   "Mark the object at point for bulk operations."
@@ -1288,8 +1306,7 @@ rename in-place. If longer, append a new copy and mark old as Free Space."
         (bin-buf g-mode--binary-buffer))
     (unless targets (user-error "No objects selected"))
     (dolist (pos targets)
-      (let* ((objects (with-current-buffer bin-buf (g-mode--scan-buffer)))
-             (obj (cl-find pos objects :key (lambda (o) (cdr (assq 'pos o))))))
+      (let* ((obj (cl-find pos g-mode--objects :key (lambda (o) (cdr (assq 'pos o))))))
         (when obj
           (let* ((old-name (cdr (assq 'name obj)))
                  (hflags (cdr (assq 'hflags obj))))
@@ -1343,8 +1360,7 @@ rename in-place. If longer, append a new copy and mark old as Free Space."
         (bin-buf g-mode--binary-buffer))
     (unless targets (user-error "No objects selected"))
     (dolist (pos targets)
-      (let* ((objects (with-current-buffer bin-buf (g-mode--scan-buffer)))
-             (obj (cl-find pos objects :key (lambda (o) (cdr (assq 'pos o))))))
+      (let* ((obj (cl-find pos g-mode--objects :key (lambda (o) (cdr (assq 'pos o))))))
         (when obj
           (let* ((old-name (cdr (assq 'name obj))))
             (unless old-name (user-error "Cannot copy unnamed or Free Space objects"))
@@ -1356,6 +1372,8 @@ rename in-place. If longer, append a new copy and mark old as Free Space."
               (message "Copied '%s' to '%s'." old-name new-name))))))
     (progn (mapc (lambda (m) (set-marker m nil)) g-mode--marked-objects) (setq g-mode--marked-objects nil))
     (g-mode--update-ui)))
+
+;;;; Database Compaction (GC)
 
 (defun g-mode-garbage-collect ()
   "Compact the database by reclaiming Free Space (deleted) objects.
@@ -1561,6 +1579,8 @@ Uses a fault-resilient multi-phase approach:
 ;;;###autoload
 (add-to-list 'file-coding-system-alist '("\\.g\\'" . no-conversion))
 
+;;;; Browser Mode Definition
+
 (define-derived-mode g-mode-brlcad-mode tabulated-list-mode "BRL-CAD"
   "UI mode for browsing BRL-CAD database objects.
 \\{g-mode-brlcad-mode-map}"
@@ -1630,6 +1650,8 @@ Uses a fault-resilient multi-phase approach:
       (insert "U       Unmark all\n")
       (insert "% m     Mark by regex\n")
       (insert "t       Toggle marks\n"))))
+
+;;;; Application Lifecycle
 
 (defun g-mode ()
   "Major mode wrapper for BRL-CAD .g files.
