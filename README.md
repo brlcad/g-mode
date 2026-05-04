@@ -8,6 +8,8 @@
 An Emacs major mode for inspecting, browsing, and editing BRL-CAD `.g`
 binary database files natively — no BRL-CAD installation required.
 
+![g-mode browsing a BRL-CAD .g database](screenshot.jpg)
+
 ## Overview
 
 `g-mode` provides a tabular UI for navigating BRL-CAD `.g` geometry
@@ -167,6 +169,11 @@ Prompts for confirmation before proceeding.
 ```sh
 emacs -Q -batch -L . -l test/g-mode-test.el -f ert-run-tests-batch-and-exit
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding
+conventions, and how to submit changes.
 
 ## License
 
